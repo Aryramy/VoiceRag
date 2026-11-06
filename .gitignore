@@ -1,0 +1,39 @@
+# Environments & Secrets
+.env
+.env.local
+.env.*.local
+frontend/.env.local
+frontend/.env.*.local
+
+# Python Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+*.pyc
+__pycache__/
+
+# Qdrant Local Vector Storage
+qdrant_storage/
+
+# Binaries & Downloads
+bin/
+*.exe
+*.zip
+*.tar.gz
+
+# Node.js & Next.js
+node_modules/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+.next/
+
+# Agent internals & system
+.agents/
+.system_generated/
+*.log
+
+# OS Metadata
+.DS_Store
+Thumbs.db

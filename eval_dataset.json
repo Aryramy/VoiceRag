@@ -1,0 +1,102 @@
+[
+    {
+        "question": "What is the dual-agent architecture proposed in VoiceAgentRAG to solve retrieval latency in real-time voice agents?",
+        "ground_truth": "VoiceAgentRAG solves retrieval latency using a dual-agent architecture consisting of a background 'Slow Thinker' that continuously pre-fetches predicted topics into a fast semantic cache, and a foreground 'Fast Talker' that reads exclusively from this sub-millisecond access cache.",
+        "context": "VoiceAgentRAG solves this with a dual-agent architecture: a background Slow Thinker continuously pre-fetches context into a fast cache, while a foreground Fast Talker reads only from this instant-access cache."
+    },
+    {
+        "question": "What latency speedup and cache hit rate performance benchmark did VoiceAgentRAG achieve on Qdrant Cloud?",
+        "ground_truth": "VoiceAgentRAG achieved a 316x retrieval speedup (reducing retrieval latency from 110ms to 0.35ms) and a 75% overall cache hit rate (86% on warm turns 5-9) across 200 queries on Qdrant Cloud.",
+        "context": "Key Results (200 queries, 10 scenarios, Qdrant Cloud): 75% cache hit rate (86% on warm turns 5-9) 316x retrieval speedup (110ms \u2192 0.35ms) 16.5 seconds of retrieval latency saved across 150 cache hits"
+    },
+    {
+        "question": "How does partial-transcript triggering optimize latency in streaming voice RAG pipelines?",
+        "ground_truth": "Partial-transcript triggering kicks off vector retrieval and reranking the moment a streaming ASR partial transcript clears a confidence threshold of 70 to 80%, allowing retrieval to run in parallel with LLM warm-up rather than sitting in the critical latency path.",
+        "context": "Trigger retrieval the moment a stable partial clears 70 to 80% confidence. Run retrieval in parallel with LLM TTFT. Vector search + reranker on the partial while the LLM warms up."
+    },
+    {
+        "question": "What is the target p50 and hard ceiling latency budget for end-to-end first audio response in 2026 voice RAG systems?",
+        "ground_truth": "The target p50 end-to-end first audio latency budget is 600\u2013800 ms, with a hard ceiling limit of 1.2 seconds.",
+        "context": "End-to-end first audio Target p50: 600-800ms Hard ceiling: 1.2s"
+    },
+    {
+        "question": "Why are smaller text chunk sizes of 200 to 400 tokens recommended for voice RAG compared to standard text RAG?",
+        "ground_truth": "Smaller chunks of 200 to 400 tokens are optimal for voice RAG because voice outputs are short (typically 1 to 2 spoken sentences). Larger chunks waste prompt budget on context the LLM won't speak.",
+        "context": "Smaller chunks. 200 to 400 tokens per chunk is the sweet spot for voice. Bigger chunks waste prompt budget on context the LLM won't use; smaller chunks force the reranker to do more work per call."
+    },
+    {
+        "question": "How does LightRAG's Native document processing engine handle section headings and semantic chunking?",
+        "ground_truth": "LightRAG's Native engine automatically detects and corrects section headings in documents and uses Paragraph semantic chunking to align chunk boundaries with native document structures like headings, paragraphs, and tables.",
+        "context": "The Native engine also automatically detects and corrects section headings in Word documents, improving content extraction from documents with inconsistent outlines and laying the foundation for section-aware text chunking."
+    },
+    {
+        "question": "What are the five distinct retrieval query modes supported by LightRAG?",
+        "ground_truth": "LightRAG supports local, global, hybrid, naive, and mix query modes.",
+        "context": "LightRAG supports five query modes: local, global, hybrid, naive, and mix."
+    },
+    {
+        "question": "What word error rate (WER) and decoding latency does the NVIDIA Nemotron Speech ASR streaming model achieve?",
+        "ground_truth": "The Nemotron Speech ASR model achieves an average WER of 8.53% at its lowest latency setting of 80 ms, and improves to 7.16% WER at a 1.1 s latency setting.",
+        "context": "The model has configurable latency settings, achieving 8.53% average WER at its lowest latency setting of 80ms, improving to 7.16% WER at a 1.1s latency, well below the one-second threshold critical for voice assistants"
+    },
+    {
+        "question": "How much does post-retrieval reranking improve retrieval accuracy in NVIDIA's Nemotron multimodal RAG pipeline?",
+        "ground_truth": "Reranking using the llama-nemotron-rerank-vl-1b-v2 model improves post-retrieval accuracy by approximately 6% to 7%.",
+        "context": "In benchmarks, adding reranking improves accuracy by approximately 6 to 7%, a meaningful gain when precision matters."
+    },
+    {
+        "question": "What are the primary architectural advantages of Dograh AI as an open-source voice platform compared to proprietary SaaS options like Vapi or Retell?",
+        "ground_truth": "Dograh AI is 100% open-source under the BSD 2-Clause license, allows complete self-hosting with zero vendor lock-in, and offers significantly lower costs when developers bring their own LLM, STT, and TTS API keys.",
+        "context": "100% open source, self-hostable \u2014 no vendor lock-in, unlike Vapi or Retell. Dograh is Indian and way cheaper at a better quality priced."
+    },
+    {
+        "question": "What primary operational risk does Retrieval-Augmented Generation (RAG) eliminate in enterprise AI deployments?",
+        "ground_truth": "RAG exists primarily to eliminate model hallucination by grounding LLM responses in real-time, enterprise-specific documents so the model never guesses ungrounded facts.",
+        "context": "take a moment what's the one problem Rag exists to solve... got it it's hallucination rag grounds the LLM in real time company specific documents so it never has to guess that's the whole mission"
+    },
+    {
+        "question": "How does an LLM Gateway such as LiteLLM preserve application uptime when an upstream model API fails?",
+        "ground_truth": "An LLM Gateway provides automatic fallbacks and smart routing to catch provider exceptions and seamlessly redirect requests to secondary backup models or providers without application downtime or code changes.",
+        "context": "There, we note the failure, and maybe try... automatic fallbacks: if one provider goes down... swap models with just a config change no code rewrite"
+    },
+    {
+        "question": "What architectural trade-off exists between speech-to-speech models and cascaded ASR-LLM-TTS pipelines for voice RAG?",
+        "ground_truth": "Speech-to-speech APIs simplify audio handling but introduce latency overhead during tool calls for RAG, whereas cascaded ASR-LLM-TTS pipelines allow hiding retrieval latency inside the LLM warm-up window via partial-transcript search.",
+        "context": "The tradeoff is that the tool-call round-trip adds latency that traditional ASR-LLM-TTS pipelines can hide via parallel retrieval. For RAG-heavy workloads many teams run a hybrid: streaming ASR... parallel retrieval... grounded LLM call... streaming TTS."
+    },
+    {
+        "question": "How are per-claim citation markers handled during text-to-speech synthesis in voice RAG agents?",
+        "ground_truth": "Grounded LLMs generate responses with per-claim citation markers (such as [chunk_id]), which are stripped before sending the text string to the TTS audio engine while being retained in execution traces for evaluation.",
+        "context": "Ground the LLM with per-claim citation markers. TTS strips markers, trace keeps them."
+    },
+    {
+        "question": "Why do deterministic input guardrail hooks before LLM execution reduce operational infrastructure costs?",
+        "ground_truth": "Input guardrails validate and intercept malicious, unsafe, or non-compliant queries before an LLM call occurs, resulting in zero API token charges for blocked requests.",
+        "context": "It runs before LLM call... zero cost for blocked requests because obviously we are not going and hitting the LLMs"
+    },
+    {
+        "question": "What fundamental structural difference separates traditional vector RAG from vectorless RAG approaches like Page Index?",
+        "ground_truth": "Traditional RAG splits text into chunks, generates vector embeddings, and performs cosine similarity search in a vector database, whereas vectorless RAG constructs a hierarchical JSON tree index of document summaries for an LLM to reason over and traverse directly.",
+        "context": "Traditional rag is nothing but chunking embedding cosine similarity and retrieve whereas in the case of page index rag you build a tree LLM reasons over tree and retrieves the exact section"
+    },
+    {
+        "question": "What core stream-processing capabilities does Pathway Live Data Framework offer for real-time RAG applications?",
+        "ground_truth": "Pathway is a Python ETL framework powered by a multithreaded Rust engine that executes incremental computations over streaming data pipelines, featuring real-time vector indexing, connectors for sources like Kafka or PostgreSQL, and automatic handling of late-arriving data.",
+        "context": "Python ETL framework for stream processing, real-time analytics, LLM pipelines, and RAG... powered by a scalable Rust engine based on Differential Dataflow... in-memory real-time Vector Index"
+    },
+    {
+        "question": "Which evaluation rubrics in ai-evaluation specifically target retrieval drift and attribution errors in voice RAG?",
+        "ground_truth": "The core rubrics for evaluating voice RAG retrieval performance are groundedness, context_relevance, chunk_attribution, and chunk_utilization.",
+        "context": "ai-evaluation scores groundedness, context_relevance, context_adherence, chunk_attribution, and chunk_utilization on every call."
+    },
+    {
+        "question": "How do WebRTC voice frameworks like LiveKit Agents handle user interruptions during active assistant speech?",
+        "ground_truth": "LiveKit Agents uses real-time Voice Activity Detection (Silero VAD) and transformer-based semantic turn detection to identify user speech mid-sentence, immediately canceling active TTS audio playback and clearing turn queues.",
+        "context": "Semantic turn detection: Uses a transformer model to detect when a user is done with their turn... real-time Silero VAD for barge-in detection"
+    },
+    {
+        "question": "How do Model Context Protocol (MCP) integrations enhance AI developer workflows in platforms like Voicebox or Dograh?",
+        "ground_truth": "MCP integrations allow AI coding agents (such as Claude Code or Cursor) to directly inspect workspaces, fetch workflow schemas, manipulate node graphs, and trigger voice tools like voicebox_speak through standardized protocol calls.",
+        "context": "Dograh ships with an MCP server, so coding agents can work directly inside your Dograh workspace... REST API plus a built-in MCP server for integrating voice I/O into your own apps and agents"
+    }
+]
