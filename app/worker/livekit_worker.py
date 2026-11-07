@@ -1,14 +1,21 @@
 import asyncio
 import os
+import sys
+from pathlib import Path
 import logging
 from dotenv import load_dotenv
+
+# Ensure project root is in sys.path for direct script execution
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 load_dotenv()
 
 from app.config import settings
 
 # Populate environment variables
-os.environ.setdefault("LIVEKIT_URL", settings.LIVEKIT_URL or "ws://localhost:7880")
+os.environ.setdefault("LIVEKIT_URL", settings.LIVEKIT_URL or "ws://127.0.0.1:7880")
 os.environ.setdefault("LIVEKIT_API_KEY", settings.LIVEKIT_API_KEY or "devkey")
 os.environ.setdefault("LIVEKIT_API_SECRET", settings.LIVEKIT_API_SECRET or "secret")
 

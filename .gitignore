@@ -12,6 +12,12 @@ ENV/
 env/
 *.pyc
 __pycache__/
+.pytest_cache/
+
+# SQLite Database
+*.db
+*.sqlite
+*.sqlite3
 
 # Qdrant Local Vector Storage
 qdrant_storage/

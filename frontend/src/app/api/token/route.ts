@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     const apiKey = process.env.LIVEKIT_API_KEY || "devkey";
     const apiSecret = process.env.LIVEKIT_API_SECRET || "secret";
-    const wsUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || "ws://localhost:7880";
+    const wsUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || "ws://127.0.0.1:7880";
 
     const at = new AccessToken(apiKey, apiSecret, {
       identity: username,

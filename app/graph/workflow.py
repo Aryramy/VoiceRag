@@ -1,4 +1,5 @@
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from app.core.state import AgenticVoiceState
 from app.graph.nodes import rewrite_query_node, retrieve_node, generate_answer_node
 from app.graph.edges import route_after_retrieval
@@ -13,5 +14,5 @@ builder.add_edge("rewrite_query", "retrieve")
 builder.add_conditional_edges("retrieve", route_after_retrieval)
 builder.add_edge("generate_answer", END)
 
-graph = builder.compile()
-
+checkpointer = MemorySaver()
+graph = builder.compile(checkpointer=checkpointer)

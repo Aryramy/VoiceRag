@@ -56,7 +56,8 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
     if not state.get("is_context_relevant", False):
         return {
             "final_answer": FALLBACK_STRICT_RESPONSE,
-            "messages": [AIMessage(content=FALLBACK_STRICT_RESPONSE)]
+            "messages": [AIMessage(content=FALLBACK_STRICT_RESPONSE)],
+            "citations": []
         }
 
     api_key = (
@@ -86,4 +87,18 @@ Retrieved Context:
 {context_str}"""
 
     response = await llm.ainvoke([SystemMessage(content=sys_prompt), HumanMessage(content=query)])
-    return {"final_answer": response.content, "messages": [AIMessage(content=response.content)]}
+    
+    citations = [
+        {
+            "chunk_id": str(doc.get("id", "chunk")),
+            "source_file": str(doc.get("source_file", "Knowledge Base")),
+            "text": str(doc.get("text", ""))
+        }
+        for doc in state.get("retrieved_context", [])
+    ]
+    
+    return {
+        "final_answer": response.content,
+        "messages": [AIMessage(content=response.content)],
+        "citations": citations
+    }

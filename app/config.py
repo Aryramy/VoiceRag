@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     OPENROUTER_TTS_VOICE: str = "george"
 
     # LiveKit configuration
-    LIVEKIT_URL: str = "ws://localhost:7880"
+    LIVEKIT_URL: str = "ws://127.0.0.1:7880"
     LIVEKIT_API_KEY: str = "devkey"
     LIVEKIT_API_SECRET: str = "secret"
 

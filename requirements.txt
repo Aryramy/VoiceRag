@@ -3,12 +3,14 @@ uvicorn[standard]>=0.28.0
 pydantic>=2.6.0
 pydantic-settings>=2.2.0
 langgraph>=0.0.30
+langgraph-checkpoint-sqlite>=0.0.1
 langchain-core>=0.1.30
 langchain-openai>=0.0.8
 qdrant-client>=1.8.0
 livekit-agents>=0.8.0
 livekit-api>=0.6.0
-numpy>=1.26.0
+aiosqlite>=0.20.0
+pypdf>=4.1.0
+python-multipart>=0.0.9
 requests>=2.31.0
 python-dotenv>=1.0.1
-
