@@ -25,7 +25,7 @@ HINGLISH_KEYWORDS = {
 }
 
 def detect_is_hinglish(text: str) -> bool:
-    """Detects whether text contains Hindi/Urdu words or Devanagari/Urdu scripts."""
+    """Detects whether text contains Hindi/Hinglish words or Devanagari/Hinglish scripts."""
     if not text:
         return False
     if re.search(r'[\u0900-\u097F\u0600-\u06FF]', text):
@@ -113,8 +113,8 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
     if user_is_hinglish:
         language_directive = (
             "CRITICAL LANGUAGE MIRRORING ENFORCEMENT:\n"
-            "DETECTED USER LANGUAGE: HINGLISH (Hindi/Urdu in Roman script).\n"
-            "MANDATORY: The user spoke in Hindi/Urdu/Hinglish. You MUST output your final answer strictly in Colloquial Roman Hinglish (natural Hindi/Urdu written in English script).\n"
+            "DETECTED USER LANGUAGE: HINGLISH (Hindi/Hinglish in Roman script).\n"
+            "MANDATORY: The user spoke in Hindi/Hinglish. You MUST output your final answer strictly in Colloquial Roman Hinglish (natural Hindi/Urdu written in English script).\n"
             "ABSOLUTE PROHIBITION: NEVER reply in English to this question! You must translate the retrieved English knowledge base facts into natural Roman Hinglish before speaking."
         )
     else:
@@ -139,7 +139,7 @@ CRITICAL OPERATING RULES:
 1. DYNAMIC LANGUAGE MIRRORING (STRICT SINGLE-MODE):
    - Analyze the user's input language and tone.
    - ENGLISH MODE: If the user speaks in English, reply ONLY in natural, fluent English.
-   - HINGLISH MODE: If the user speaks or requests Hindi/Urdu (using words like 'agar', 'kya', 'paani', 'mein', 'hai', 'achcha', 'kese', 'kab', 'kahan', 'thik he', 'aap', 'tum', 'hum', 'batlao', 'kisse', 'kun') or Devanagari/Urdu script, reply ONLY in natural, everyday Colloquial Roman Hinglish.
+   - HINGLISH MODE: If the user speaks or requests Hindi/Hinglish (using words like 'agar', 'kya', 'paani', 'mein', 'hai', 'achcha', 'kese', 'kab', 'kahan', 'thik he', 'aap', 'tum', 'hum', 'batlao', 'kisse', 'kun') or Devanagari/Hinglish script, reply ONLY in natural, everyday Colloquial Roman Hinglish.
    - You must translate the retrieved English context into the user's language before speaking. Never reply in English to a Hindi/Hinglish question.
    - NEVER mix English and Hinglish modes in a single response.
 
