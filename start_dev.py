@@ -14,6 +14,13 @@ import socket
 import subprocess
 import signal
 
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # Terminal ANSI color codes for readable output
 GREEN = "\033[92m"
 YELLOW = "\033[93m"
@@ -37,7 +44,7 @@ def check_virtual_env():
         sys.exit(1)
         
     venv_path = os.environ.get("VIRTUAL_ENV", sys.prefix)
-    print(f"{GREEN}[✓] Virtual Environment Active:{RESET} {venv_path}")
+    print(f"{GREEN}[OK] Virtual Environment Active:{RESET} {venv_path}")
 
 
 def check_livekit_port(host="127.0.0.1", port=7880):
@@ -48,7 +55,7 @@ def check_livekit_port(host="127.0.0.1", port=7880):
     try:
         result = sock.connect_ex((host, port))
         if result == 0:
-            print(f"{GREEN}[✓] LiveKit Server Detected on port {port}!{RESET}\n")
+            print(f"{GREEN}[OK] LiveKit Server Detected on port {port}!{RESET}\n")
             return True
         else:
             print(f"\n{RED}*******************************************************************{RESET}")
@@ -89,7 +96,7 @@ def run_preflight_tests():
         print(f"{RED}***************************************************{RESET}")
         sys.exit(result.returncode)
         
-    print(f"\n{GREEN}[✓] All Phase 5 Integration Tests Passed!{RESET}\n")
+    print(f"\n{GREEN}[OK] All Phase 5 Integration Tests Passed!{RESET}\n")
 
 
 def boot_servers():
@@ -115,8 +122,9 @@ def boot_servers():
         frontend_dir = os.path.abspath("./frontend")
         if os.path.exists(frontend_dir):
             print(f"{BLUE}[3/3] Starting Next.js Frontend (npm run dev)...{RESET}")
+            npm_bin = "npm.cmd" if is_windows else "npm"
             processes.append(("Next.js Frontend", subprocess.Popen(
-                ["npm", "run", "dev"],
+                [npm_bin, "run", "dev"],
                 cwd=frontend_dir,
                 shell=is_windows
             )))
@@ -145,7 +153,7 @@ def boot_servers():
                     proc.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
-        print(f"{GREEN}[✓] All services stopped successfully.{RESET}")
+        print(f"{GREEN}[OK] All services stopped successfully.{RESET}")
         sys.exit(0)
 
 

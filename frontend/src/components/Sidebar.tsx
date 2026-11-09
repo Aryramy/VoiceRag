@@ -11,6 +11,7 @@ import {
   Clock,
   AlertCircle,
   Layers,
+  Trash2,
 } from "lucide-react";
 import { DocumentInfo, SessionInfo } from "@/hooks/useChatSession";
 
@@ -23,6 +24,7 @@ interface SidebarProps {
   onSelectSession: (sessionId: string) => void;
   onNewSession: () => void;
   onRefreshDocs: () => void;
+  onDeleteDoc?: (filename: string) => void;
 }
 
 export function Sidebar({
@@ -34,6 +36,7 @@ export function Sidebar({
   onSelectSession,
   onNewSession,
   onRefreshDocs,
+  onDeleteDoc,
 }: SidebarProps) {
   return (
     <aside className="w-full lg:w-72 flex flex-col gap-5 bg-slate-900/60 p-4 rounded-2xl border border-slate-800 backdrop-blur-md">
@@ -48,15 +51,20 @@ export function Sidebar({
             onClick={onNewSession}
             className="flex items-center gap-1 text-[11px] bg-indigo-600 hover:bg-indigo-500 text-white px-2.5 py-1 rounded-lg transition shadow-sm font-medium"
           >
-            <Plus className="w-3.5 h-3.5" />
+            <Plus className="w-3 h-3" />
             <span>New Chat</span>
           </button>
         </div>
 
-        {/* Sessions list */}
+        {/* Sessions List */}
         <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-          {sessions.length === 0 ? (
-            <p className="text-[11px] text-slate-500 italic py-1">No prior sessions saved.</p>
+          {isLoadingSessions && sessions.length === 0 ? (
+            <div className="text-[11px] text-slate-500 py-2 text-center flex items-center justify-center gap-2">
+              <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" />
+              <span>Loading sessions...</span>
+            </div>
+          ) : sessions.length === 0 ? (
+            <div className="text-[11px] text-slate-500 py-2 text-center">No previous sessions</div>
           ) : (
             sessions.map((s) => {
               const isActive = s.session_id === currentSessionId;
@@ -64,9 +72,9 @@ export function Sidebar({
                 <button
                   key={s.session_id}
                   onClick={() => onSelectSession(s.session_id)}
-                  className={`w-full text-left px-3 py-2 rounded-xl text-xs flex items-center justify-between transition ${
+                  className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-left transition ${
                     isActive
-                      ? "bg-indigo-600/20 text-indigo-300 border border-indigo-500/30"
+                      ? "bg-indigo-600/20 text-indigo-200 border border-indigo-500/30"
                       : "bg-slate-950/40 text-slate-400 hover:bg-slate-800/60 hover:text-slate-200 border border-slate-850"
                   }`}
                 >
@@ -129,7 +137,7 @@ export function Sidebar({
                   ) : (
                     <span className="inline-flex items-center gap-1 text-[10px] text-rose-400 bg-rose-500/10 px-1.5 py-0.5 rounded border border-rose-500/20 shrink-0">
                       <AlertCircle className="w-2.5 h-2.5" />
-                      <span>{doc.status}</span>
+                      <span className="truncate max-w-[120px]" title={doc.status}>{doc.status}</span>
                     </span>
                   )}
                 </div>
@@ -139,7 +147,21 @@ export function Sidebar({
                     <Layers className="w-3 h-3 text-slate-500" />
                     {doc.chunk_count} chunk{doc.chunk_count === 1 ? "" : "s"}
                   </span>
-                  <span>{doc.uploaded_at ? doc.uploaded_at.split(" ")[0] : ""}</span>
+                  <div className="flex items-center gap-2">
+                    <span>{doc.uploaded_at ? doc.uploaded_at.split(" ")[0] : ""}</span>
+                    {onDeleteDoc && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteDoc(doc.filename);
+                        }}
+                        title={`Delete ${doc.filename}`}
+                        className="text-slate-500 hover:text-rose-400 p-0.5 rounded transition"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))
@@ -149,4 +171,3 @@ export function Sidebar({
     </aside>
   );
 }
-

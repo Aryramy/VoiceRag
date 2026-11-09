@@ -49,3 +49,25 @@ export async function GET() {
   }
 }
 
+export async function DELETE(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const filename = searchParams.get("filename");
+    if (!filename) {
+      return NextResponse.json({ error: "No filename provided" }, { status: 400 });
+    }
+
+    const response = await fetch(`${BACKEND_URL}/api/documents/${encodeURIComponent(filename)}`, {
+      method: "DELETE",
+    });
+
+    const data = await response.json();
+    return NextResponse.json(data, { status: response.status });
+  } catch (error: any) {
+    console.error("Delete document proxy error:", error);
+    return NextResponse.json(
+      { error: error.message || "Failed to proxy document deletion" },
+      { status: 500 }
+    );
+  }
+}

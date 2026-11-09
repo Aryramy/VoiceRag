@@ -1,11 +1,12 @@
 import os
 import uuid
+import re
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException
 from pypdf import PdfReader
 from langchain_openai import OpenAIEmbeddings
-from qdrant_client.models import PointStruct
+from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 from app.core.qdrant_client import client as qdrant_client, COLLECTION_NAME, init_qdrant, get_embeddings
-from app.core.database import record_document, list_documents
+from app.core.database import record_document, list_documents, delete_document
 from app.config import settings
 
 router = APIRouter(prefix="/api", tags=["upload"])
@@ -13,7 +14,25 @@ UPLOAD_DIR = os.path.abspath("./data/knowledge_base")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 def chunk_text(text: str, chunk_size: int = 350, overlap: int = 50) -> list[str]:
-    """Splits document text into overlapping token-sized chunks optimal for RAG."""
+    """Splits document text into logical sections or overlapping token-sized chunks optimal for RAG."""
+    # If the markdown text has section headers (## ), split by section headers
+    if re.search(r'\n(?=##\s+)', text):
+        raw_sections = [s.strip() for s in re.split(r'\n(?=##\s+)', text) if s.strip()]
+        chunks = []
+        for s in raw_sections:
+            if len(s) < 30 and not s.startswith("##"):
+                continue
+            words = s.split()
+            if len(words) <= chunk_size:
+                chunks.append(s)
+            else:
+                i = 0
+                while i < len(words):
+                    chunks.append(" ".join(words[i : i + chunk_size]))
+                    i += chunk_size - overlap
+        if chunks:
+            return chunks
+
     words = text.split()
     chunks = []
     i = 0
@@ -62,7 +81,13 @@ async def process_document_background(file_path: str, filename: str):
                 )
             )
 
-        await qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
+        if qdrant_client is not None:
+            await qdrant_client.upsert(collection_name=COLLECTION_NAME, points=points)
+        else:
+            from app.core.qdrant_client import get_qdrant_client
+            qc = get_qdrant_client()
+            if qc:
+                await qc.upsert(collection_name=COLLECTION_NAME, points=points)
         await record_document(filename, len(chunks), status="indexed")
         print(f"[Ingestion Complete] Successfully indexed {len(chunks)} chunks from {filename}")
 
@@ -95,3 +120,25 @@ async def get_uploaded_documents():
     docs = await list_documents()
     return {"documents": docs}
 
+@router.delete("/documents/{filename}")
+async def remove_document(filename: str):
+    await delete_document(filename)
+    # Remove from Qdrant vector store as well
+    try:
+        from app.core.qdrant_client import get_qdrant_client, COLLECTION_NAME
+        qc = get_qdrant_client()
+        if qc:
+            await qc.delete(
+                collection_name=COLLECTION_NAME,
+                points_selector=Filter(
+                    must=[
+                        FieldCondition(
+                            key="source_file",
+                            match=MatchValue(value=filename)
+                        )
+                    ]
+                )
+            )
+    except Exception as e:
+        print(f"[WARN] Failed to delete points for {filename} from Qdrant: {e}")
+    return {"status": "deleted", "filename": filename}

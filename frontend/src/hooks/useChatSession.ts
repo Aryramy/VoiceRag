@@ -62,6 +62,19 @@ export function useChatSession() {
     }
   }, []);
 
+  const deleteDocument = useCallback(async (filename: string) => {
+    try {
+      const res = await fetch(`/api/upload?filename=${encodeURIComponent(filename)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        await refreshDocuments();
+      }
+    } catch (e) {
+      console.error("Failed to delete document:", e);
+    }
+  }, [refreshDocuments]);
+
   const refreshSessions = useCallback(async () => {
     setIsLoadingSessions(true);
     try {
@@ -91,7 +104,7 @@ export function useChatSession() {
     createNewSession,
     selectSession,
     refreshDocuments,
+    deleteDocument,
     refreshSessions,
   };
 }
-

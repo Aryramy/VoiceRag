@@ -1,4 +1,5 @@
 import io
+import sqlite3
 from fastapi.testclient import TestClient
 from app.main import app
 from app.worker.audio_pipeline import strip_citations_for_tts
@@ -30,6 +31,11 @@ def test_upload_endpoint():
     assert data["status"] == "queued"
     assert data["filename"] == "dev_test_doc.md"
 
+    # Clean up test artifact from DB so it doesn't pollute the UI
+    with sqlite3.connect("app.db") as conn:
+        conn.execute("DELETE FROM uploaded_documents WHERE filename = ?", ("dev_test_doc.md",))
+        conn.commit()
+
 def test_chat_and_history_endpoints():
     session_id = "preflight-session-test"
     res = client.post(
@@ -55,4 +61,3 @@ def test_citation_stripping():
     assert "[chunk_123]" not in cleaned
     assert "[chunk_456]" not in cleaned
     assert "Here is an answer and another fact." == cleaned.strip()
-

@@ -26,6 +26,7 @@ export default function MultimodalWorkspacePage() {
     createNewSession,
     selectSession,
     refreshDocuments,
+    deleteDocument,
     refreshSessions,
   } = useChatSession();
 
@@ -114,6 +115,7 @@ export default function MultimodalWorkspacePage() {
             onSelectSession={selectSession}
             onNewSession={createNewSession}
             onRefreshDocs={refreshDocuments}
+            onDeleteDoc={deleteDocument}
           />
         </div>
 

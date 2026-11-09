@@ -30,9 +30,10 @@ client = get_qdrant_client()
 def get_embeddings() -> OpenAIEmbeddings:
     """Always instantiates with current event loop to prevent 'Event loop is closed' across threads/requests."""
     return OpenAIEmbeddings(
-        model=settings.OPENROUTER_EMBEDDING_MODEL,
-        openai_api_base=settings.OPENROUTER_BASE_URL,
-        openai_api_key=settings.OPENROUTER_API_KEY
+        model=settings.effective_embedding_model,
+        openai_api_base=settings.effective_embedding_base_url,
+        openai_api_key=settings.effective_embedding_api_key,
+        check_embedding_ctx_length=False
     )
 
 async def init_qdrant() -> None:

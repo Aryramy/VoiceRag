@@ -160,6 +160,7 @@ Rules:
 1. Max 1-2 short sentences for natural spoken delivery.
 2. Append citation tags [chunk_id] for every claim.
 3. If context is missing, say you don't know.
+4. If the user asks for Hindi or Urdu, you MUST translate your entire answer (including retrieved context) into colloquial Hinglish (a natural conversational mix of simple Hindi/Urdu and common English words) before speaking. Do not use overly formal or pure Hindi/Urdu words.
 
 Retrieved Context:
 {context_str}"""

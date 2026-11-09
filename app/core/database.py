@@ -1,20 +1,21 @@
 import aiosqlite
+import sqlite3
 import os
 from typing import List, Dict, Any
 
 DB_PATH = os.path.abspath("./app.db")
 
-async def init_db():
-    """Initializes local user-space SQLite tables for sessions and documents."""
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
+def init_db_sync():
+    """Synchronously initializes local user-space SQLite tables for sessions and documents."""
+    with sqlite3.connect(DB_PATH) as db:
+        db.execute("""
             CREATE TABLE IF NOT EXISTS sessions (
                 session_id TEXT PRIMARY KEY,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 title TEXT
             )
         """)
-        await db.execute("""
+        db.execute("""
             CREATE TABLE IF NOT EXISTS chat_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id TEXT,
@@ -25,7 +26,7 @@ async def init_db():
                 FOREIGN KEY(session_id) REFERENCES sessions(session_id)
             )
         """)
-        await db.execute("""
+        db.execute("""
             CREATE TABLE IF NOT EXISTS uploaded_documents (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 filename TEXT UNIQUE,
@@ -34,7 +35,14 @@ async def init_db():
                 uploaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
-        await db.commit()
+        db.commit()
+
+# Ensure schema exists immediately on module load
+init_db_sync()
+
+async def init_db():
+    """Initializes local user-space SQLite tables for sessions and documents."""
+    init_db_sync()
 
 async def save_chat_message(session_id: str, sender: str, content: str, citations_json: str = "[]"):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -66,6 +74,11 @@ async def record_document(filename: str, chunk_count: int, status: str = "indexe
         )
         await db.commit()
 
+async def delete_document(filename: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("DELETE FROM uploaded_documents WHERE filename = ?", (filename,))
+        await db.commit()
+
 async def list_documents() -> List[Dict[str, Any]]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
@@ -79,4 +92,3 @@ async def list_sessions() -> List[Dict[str, Any]]:
         async with db.execute("SELECT session_id, created_at, title FROM sessions ORDER BY created_at DESC") as cursor:
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
-

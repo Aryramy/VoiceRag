@@ -32,10 +32,11 @@ async def handle_chat(req: ChatRequest):
         await save_chat_message(req.session_id, "user", req.message)
 
         # 2. Invoke LangGraph pipeline
-        api_key = os.getenv("OPENROUTER_API_KEY", settings.OPENROUTER_API_KEY)
+        api_key = settings.effective_llm_api_key
         config = {
             "configurable": {
                 "thread_id": req.session_id,
+                "api_key": api_key,
                 "openrouter_key": api_key
             }
         }
