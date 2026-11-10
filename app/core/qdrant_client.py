@@ -4,8 +4,14 @@ import uuid
 from typing import List, Dict, Any, Tuple
 from qdrant_client import AsyncQdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct
-from langchain_openai import OpenAIEmbeddings
+from langchain_community.embeddings.fastembed import FastEmbedEmbeddings
 from app.config import settings
+
+# Force offline mode for local FastEmbed weights
+os.environ["HF_HUB_OFFLINE"] = "1"
+project_cache = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "models", "fastembed_cache"))
+if os.path.exists(project_cache):
+    os.environ["FASTEMBED_CACHE_PATH"] = project_cache
 
 STORAGE_PATH = os.path.abspath(settings.QDRANT_STORAGE_PATH)
 COLLECTION_NAME = settings.QDRANT_COLLECTION_NAME
@@ -27,17 +33,15 @@ def get_qdrant_client() -> AsyncQdrantClient | None:
 
 client = get_qdrant_client()
 
-def get_embeddings() -> OpenAIEmbeddings:
-    """Always instantiates with current event loop to prevent 'Event loop is closed' across threads/requests."""
-    return OpenAIEmbeddings(
-        model=settings.effective_embedding_model,
-        openai_api_base=settings.effective_embedding_base_url,
-        openai_api_key=settings.effective_embedding_api_key,
-        check_embedding_ctx_length=False
-    )
+def get_embeddings() -> FastEmbedEmbeddings:
+    """Instantiate FastEmbedEmbeddings offline to bring vectorization latency down to <20ms."""
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    if os.path.exists(project_cache):
+        os.environ["FASTEMBED_CACHE_PATH"] = project_cache
+    return FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 async def init_qdrant() -> None:
-    """Initialize the local Qdrant collection if it does not exist."""
+    """Initialize the local Qdrant collection with 384 dimensions if it does not exist or has outdated dimensions."""
     q_client = get_qdrant_client()
     if q_client is None:
         return
@@ -46,8 +50,21 @@ async def init_qdrant() -> None:
     if COLLECTION_NAME not in names:
         await q_client.create_collection(
             collection_name=COLLECTION_NAME,
-            vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+            vectors_config=VectorParams(size=384, distance=Distance.COSINE)
         )
+    else:
+        try:
+            col_info = await q_client.get_collection(COLLECTION_NAME)
+            curr_size = getattr(col_info.config.params.vectors, "size", None)
+            if curr_size and curr_size != 384:
+                print(f"[Qdrant] Migrating collection '{COLLECTION_NAME}' from dim {curr_size} to 384")
+                await q_client.delete_collection(COLLECTION_NAME)
+                await q_client.create_collection(
+                    collection_name=COLLECTION_NAME,
+                    vectors_config=VectorParams(size=384, distance=Distance.COSINE)
+                )
+        except Exception as e:
+            print(f"[WARN] Error validating collection dimension: {e}")
 
 async def search_qdrant(query: str, top_k: int = 3, min_score_threshold: float = 0.70) -> Tuple[List[Dict[str, Any]], float]:
     """Search the local embedded Qdrant collection for relevant documents with fallback to internal HTTP if locked."""

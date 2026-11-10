@@ -24,6 +24,7 @@ qdrant_storage/
 
 # Binaries & Downloads
 bin/
+models/
 *.exe
 *.zip
 *.tar.gz

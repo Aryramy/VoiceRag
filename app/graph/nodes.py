@@ -33,6 +33,30 @@ def detect_is_hinglish(text: str) -> bool:
     words = set(re.findall(r'\b[a-zA-Z]+\b', text.lower()))
     return bool(words & HINGLISH_KEYWORDS)
 
+async def romanize_script(text: str, api_key: str | None = None) -> str:
+    """Translates/transliterates any Arabic/Urdu or Devanagari script into natural, colloquial Roman Hinglish."""
+    if not text or not re.search(r'[\u0600-\u06FF\u0900-\u097F]', text):
+        return text
+    try:
+        llm = ChatOpenAI(
+            model=settings.effective_fast_model,
+            openai_api_base=settings.effective_llm_base_url,
+            openai_api_key=api_key or settings.effective_llm_api_key,
+            temperature=0.0
+        )
+        sys_msg = (
+            "You are a Roman Urdu / Hinglish transliterator. Your job is to convert Urdu or Hindi text into natural Roman English characters (Latin script). "
+            "Output ONLY the transliterated text in standard English alphabet without quotes, explanations, or Arabic/Devanagari letters."
+        )
+        res = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=f"Convert to Roman script: {text}")])
+        romanized = res.content.strip() if hasattr(res, "content") else str(res).strip()
+        romanized = re.sub(r'^["\']|["\']$', '', romanized).strip()
+        if romanized and not re.search(r'[\u0600-\u06FF\u0900-\u097F]', romanized):
+            return romanized
+    except Exception as e:
+        logger.warning(f"Script romanization failed: {e}")
+    return text
+
 async def rewrite_query_node(state: AgenticVoiceState, config: RunnableConfig | None = None) -> Dict[str, Any]:
     raw = state.get("raw_query", "")
     api_key = (
@@ -66,6 +90,20 @@ async def rewrite_query_node(state: AgenticVoiceState, config: RunnableConfig | 
         rewritten = res.content.strip() if hasattr(res, "content") else str(res).strip()
         return {"rewritten_query": rewritten if rewritten else raw}
     except Exception as e:
+        if settings.CHEAPER_INFERENCE_API_KEY and "openrouter" in str(settings.effective_llm_base_url).lower():
+            try:
+                fallback_llm = ChatOpenAI(
+                    model=settings.CHEAPER_INFERENCE_MODEL or "deepseek-v4-flash-0731",
+                    openai_api_base=settings.CHEAPER_INFERENCE_BASE_URL,
+                    openai_api_key=settings.CHEAPER_INFERENCE_API_KEY,
+                    temperature=0.0
+                )
+                res = await fallback_llm.ainvoke([HumanMessage(content=prompt)])
+                rewritten = res.content.strip() if hasattr(res, "content") else str(res).strip()
+                if rewritten:
+                    return {"rewritten_query": rewritten}
+            except Exception:
+                pass
         logger.warning(f"Query rewrite LLM call failed ({e}), falling back to raw query: {raw}")
         return {"rewritten_query": raw}
 
@@ -113,9 +151,15 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
     if user_is_hinglish:
         language_directive = (
             "CRITICAL LANGUAGE MIRRORING ENFORCEMENT:\n"
-            "DETECTED USER LANGUAGE: HINGLISH (Hindi/Hinglish in Roman script).\n"
-            "MANDATORY: The user spoke in Hindi/Hinglish. You MUST output your final answer strictly in Colloquial Roman Hinglish (natural Hindi/Urdu written in English script).\n"
-            "ABSOLUTE PROHIBITION: NEVER reply in English to this question! You must translate the retrieved English knowledge base facts into natural Roman Hinglish before speaking."
+            "DETECTED USER LANGUAGE: HINGLISH (Hindi/Urdu/Hinglish in Roman Latin script).\n"
+            "MANDATORY: The user spoke in Hindi/Urdu/Hinglish. You MUST output your final answer strictly in Colloquial Roman Hinglish (Latin English alphabet A-Z only).\n"
+            "ABSOLUTE SCRIPT PROHIBITION: NEVER use Arabic, Urdu, or Devanagari characters (like ابپ or अआइ). Every single word MUST be written in standard English Latin letters.\n"
+            "PHONETIC PRONUNCIATION ACCURACY: Spell Hindi/Urdu words using standard smooth Roman phonetics so TTS does not stutter or stammer (e.g., write 'toota' or 'damaged' - NEVER write 'tutaa'; write 'Apex' - NEVER write 'Aapex'; write 'theek' - NEVER write 'thik'; write 'yeh' - NEVER write 'yah'; write 'paise' - NEVER write 'peese'; write 'wapas' - NEVER write 'vapas').\n"
+            "HINGLISH STYLE AND GRAMMAR GUIDE:\n"
+            "- CRITICAL LENGTH LIMIT: Never speak more than 2 short sentences. Do not list all steps. Just give the primary answer directly.\n"
+            "- Never use formal words like 'sampark' or 'ensure'. Use everyday casual words like 'contact', 'baat karein', or 'dhyaan rakhein'.\n"
+            "- Never say '5 se 7 working days mein mil jayega jab product unke inspection warehouse mein receive aur approve ho jayega.' Just say: 'Warehouse inspection ke baad 5 se 7 din mein refund mil jayega.'\n"
+            "- Never use awkward literal phrasing like 'lekin yah condition hai ki' or 'product ki use kiya hai' or 'apne peese' or 'bahut achi hai' or 'yadi'."
         )
     else:
         language_directive = (
@@ -123,6 +167,9 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
             "DETECTED USER LANGUAGE: PURE ENGLISH.\n"
             "MANDATORY: Reply strictly in natural, fluent English. Do not use Hindi/Hinglish."
         )
+
+    # Pre-clean query if in Arabic/Urdu/Devanagari script so LLM never sees raw non-Latin text
+    clean_query = await romanize_script(query, api_key=api_key)
 
     try:
         llm = ChatOpenAI(
@@ -139,12 +186,20 @@ CRITICAL OPERATING RULES:
 1. DYNAMIC LANGUAGE MIRRORING (STRICT SINGLE-MODE):
    - Analyze the user's input language and tone.
    - ENGLISH MODE: If the user speaks in English, reply ONLY in natural, fluent English.
-   - HINGLISH MODE: If the user speaks or requests Hindi/Hinglish (using words like 'agar', 'kya', 'paani', 'mein', 'hai', 'achcha', 'kese', 'kab', 'kahan', 'thik he', 'aap', 'tum', 'hum', 'batlao', 'kisse', 'kun') or Devanagari/Hinglish script, reply ONLY in natural, everyday Colloquial Roman Hinglish.
-   - You must translate the retrieved English context into the user's language before speaking. Never reply in English to a Hindi/Hinglish question.
+   - HINGLISH MODE: If the user speaks or requests Hindi/Urdu/Hinglish (using words like 'agar', 'kya', 'paani', 'mein', 'hai', 'achcha', 'kese', 'kab', 'kahan', 'thik he', 'aap', 'tum', 'hum', 'batlao', 'kisse', 'kun') or Devanagari/Urdu script, reply ONLY in natural, everyday Colloquial Roman Hinglish.
+   - STRICT LATIN ALPHABET ONLY: NEVER output Arabic, Urdu (Nastaliq), or Devanagari script. All Hindi/Urdu words must be written in the Latin alphabet (e.g. 'Aap delivery ke 30 din ke andar product return kar sakte hain.').
+   - HINGLISH STYLE AND GRAMMAR GUIDE:
+     * CRITICAL LENGTH LIMIT: Never speak more than 2 short sentences. Do not list all steps. Just give the primary answer directly.
+     * Never use formal words like 'sampark' or 'ensure'. Use everyday casual words like 'contact', 'baat karein', or 'dhyaan rakhein'.
+     * Never say "5 se 7 working days mein mil jayega jab product unke inspection warehouse mein receive aur approve ho jayega." Just say: "Warehouse inspection ke baad 5 se 7 din mein refund mil jayega."
+     * Never use awkward phrases like 'apne peese' (use 'paise' or 'refund') or 'product ki koi use' (use 'product unused ho').
+   - You must translate the retrieved English context into natural Roman Hinglish before speaking. Never reply in English to a Hindi/Hinglish question.
    - NEVER mix English and Hinglish modes in a single response.
 
-2. TEXT-TO-SPEECH (TTS) PROSE FORMATTING:
-   - Keep answers strictly to 1 or 2 short, conversational sentences.
+2. TEXT-TO-SPEECH (TTS) PROSE & PHONETICS:
+   - CRITICAL LENGTH LIMIT: Strictly maximum 1 or 2 short, crisp, conversational sentences (total under 30 words). Never output 3 or more sentences.
+   - Spell words with smooth phonetics for TTS clarity: use 'toota' or 'damaged' (never 'tutaa'), 'Apex' (never 'Aapex'), 'theek' (never 'thik'), 'yeh' (never 'yah'), 'paise' (never 'peese'), 'wapas' (never 'vapas'), 'agar' (never 'yadi').
+   - Avoid broken grammar like 'product ki koi use' (say 'product unused ho') or 'yah condition hai ki'.
    - ABSOLUTE PROHIBITION: Never use bullet points, numbered lists, bolding, italics, or Markdown formatting of any kind.
    - Speak directly as a human speaks, using smooth conversational transitions.
 
@@ -171,17 +226,36 @@ Retrieved Knowledge Base Context:
         history_msgs = state.get("messages", [])
         for m in history_msgs[-6:]:
             prompt_messages.append(m)
-        if not history_msgs or history_msgs[-1].content != query:
-            prompt_messages.append(HumanMessage(content=query))
+        if not history_msgs or history_msgs[-1].content != clean_query:
+            prompt_messages.append(HumanMessage(content=clean_query))
 
         response = await llm.ainvoke(prompt_messages)
         answer_text = response.content if hasattr(response, "content") else str(response)
+        # Fail-safe romanization check if any non-Latin characters slipped through
+        if answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
+            answer_text = await romanize_script(answer_text, api_key=api_key)
     except Exception as e:
-        logger.warning(f"Answer generation LLM call failed ({e}), using fallback response")
-        if user_is_hinglish:
-            answer_text = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
-        else:
-            answer_text = FALLBACK_STRICT_RESPONSE
+        logger.warning(f"Answer generation primary LLM call failed ({e}), checking fallback provider...")
+        answer_text = None
+        if settings.CHEAPER_INFERENCE_API_KEY and "openrouter" in str(settings.effective_llm_base_url).lower():
+            try:
+                fallback_llm = ChatOpenAI(
+                    model=settings.CHEAPER_INFERENCE_MODEL or "deepseek-v4-flash-0731",
+                    openai_api_base=settings.CHEAPER_INFERENCE_BASE_URL,
+                    openai_api_key=settings.CHEAPER_INFERENCE_API_KEY,
+                    temperature=0.0
+                )
+                fb_res = await fallback_llm.ainvoke(prompt_messages)
+                answer_text = fb_res.content if hasattr(fb_res, "content") else str(fb_res)
+                logger.info("Fallback LLM call to CheaperInference succeeded.")
+            except Exception as e2:
+                logger.warning(f"Fallback LLM call also failed ({e2})")
+
+        if not answer_text:
+            if user_is_hinglish:
+                answer_text = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
+            else:
+                answer_text = FALLBACK_STRICT_RESPONSE
     
     citations = [
         {

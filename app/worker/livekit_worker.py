@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import json
+import re
 from pathlib import Path
 import logging
 from dotenv import load_dotenv
@@ -37,6 +38,7 @@ from livekit.plugins import openai, silero
 import livekit.plugins.openai.tts as oai_tts
 from langchain_core.messages import HumanMessage, AIMessage
 from app.graph.workflow import graph
+from app.graph.nodes import detect_is_hinglish, romanize_script
 from app.core.database import get_chat_history, save_chat_message
 from app.worker.audio_pipeline import strip_citations_for_tts
 
@@ -49,6 +51,33 @@ oai_tts.AUDIO_STREAM_MODELS = _AudioStreamModelsSet()
 
 logger = logging.getLogger("livekit_worker")
 logging.basicConfig(level=logging.INFO)
+
+class RomanizingSTTWrapper(stt.STT):
+    """Intercepts STT transcription frames to ensure all speech events emitted by LiveKit
+    are already transliterated to Roman Hinglish before touching WebRTC, transcripts, or events.
+    """
+    def __init__(self, wrapped: stt.STT):
+        super().__init__(capabilities=wrapped.capabilities)
+        self._wrapped = wrapped
+
+    async def _recognize_impl(
+        self,
+        buffer,
+        *,
+        language=None,
+        conn_options=None,
+    ):
+        event = await self._wrapped._recognize_impl(
+            buffer, language=language, conn_options=conn_options
+        )
+        if event and event.alternatives:
+            for alt in event.alternatives:
+                if alt.text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', alt.text):
+                    alt.text = await romanize_script(alt.text)
+        return event
+
+    def stream(self, *args, **kwargs):
+        return self._wrapped.stream(*args, **kwargs)
 
 server = AgentServer()
 
@@ -69,28 +98,22 @@ async def entrypoint(ctx: JobContext):
     
     # Use StreamAdapter to wrap standard REST Whisper STT with local VAD buffering
     base_stt = openai.STT(
-        model=settings.STT_MODEL,
+        model=settings.effective_stt_model,
         base_url=settings.effective_stt_base_url,
         api_key=settings.effective_stt_api_key,
+        prompt="Haanji, boliye. Main aapki kya madad kar sakta hoon? Main return policy, order status aur shipping ke baare mein bata sakta hoon.",
         use_realtime=False,
         # stop STT auto-translate:
         language="",
         detect_language=True
     )
-    adapted_stt = stt.StreamAdapter(stt=base_stt, vad=vad)
+    adapted_stt = stt.StreamAdapter(stt=RomanizingSTTWrapper(base_stt), vad=vad)
 
-    tts_english = openai.TTS(
-        model=settings.TTS_MODEL,
+    tts = openai.TTS(
+        model=settings.effective_tts_model,
         base_url=settings.effective_tts_base_url,
         api_key=settings.effective_tts_api_key,
-        voice=settings.TTS_VOICE
-    )
-
-    tts_hinglish = openai.TTS(
-        model=settings.TTS_HINGLISH_MODEL,
-        base_url=settings.effective_tts_base_url,
-        api_key=settings.effective_tts_api_key,
-        voice=settings.TTS_HINGLISH_VOICE
+        voice=settings.effective_tts_voice
     )
 
     # 4. TurnHandlingOptions with 2.5-second silence threshold (min_delay = 2.5s)
@@ -107,7 +130,7 @@ async def entrypoint(ctx: JobContext):
     session = AgentSession(
         vad=vad,
         stt=adapted_stt,
-        tts=tts_english,
+        tts=tts,
         turn_handling=turn_handling
     )
 
@@ -116,7 +139,14 @@ async def entrypoint(ctx: JobContext):
 
     async def handle_user_query(user_transcript: str):
         user_transcript = user_transcript.strip()
-        if not user_transcript or user_transcript in recent_transcripts:
+        if not user_transcript:
+            return
+
+        # Romanize any Urdu/Arabic/Devanagari script immediately so terminal, DB & LLM only see clean Latin script
+        if re.search(r'[\u0600-\u06FF\u0900-\u097F]', user_transcript):
+            user_transcript = await romanize_script(user_transcript)
+
+        if user_transcript in recent_transcripts:
             return
 
         recent_transcripts.add(user_transcript)
@@ -168,7 +198,6 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.warning(f"Failed to save user speech to DB: {e}")
         
-        from app.graph.nodes import detect_is_hinglish
         is_user_hinglish = detect_is_hinglish(user_transcript)
         fallback_msg = (
             "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
@@ -190,25 +219,17 @@ async def entrypoint(ctx: JobContext):
 
             # Clean response for TTS engine (strip bracketed citations)
             spoken_text = strip_citations_for_tts(raw_answer)
+            # Ensure spoken text is pure Roman script so TTS voice produces natural Indian cadence
+            if re.search(r'[\u0600-\u06FF\u0900-\u097F]', spoken_text):
+                spoken_text = await romanize_script(spoken_text)
             logger.info(f"TTS Spoken Output: {spoken_text}")
 
-            # Dynamic TTS Routing: Indian voice for Hinglish/Hindi turns, alloy for English turns
-            is_turn_hinglish = is_user_hinglish or detect_is_hinglish(spoken_text)
-            chosen_tts = tts_hinglish if is_turn_hinglish else tts_english
-            session._tts = chosen_tts
-            if hasattr(agent, "_tts"):
-                agent._tts = chosen_tts
             logger.info(
-                f"TTS Voice Selected: {'Indian Voice (' + settings.TTS_HINGLISH_VOICE + ')' if is_turn_hinglish else 'English Alloy (' + settings.TTS_VOICE + ')'}"
+                f"TTS Voice Selected: Native Indian Voice ({settings.effective_tts_voice} via {settings.effective_tts_model})"
             )
-
             await session.say(spoken_text)
         except Exception as e:
             logger.error(f"Error executing LangGraph pipeline: {e}")
-            chosen_tts = tts_hinglish if is_user_hinglish else tts_english
-            session._tts = chosen_tts
-            if hasattr(agent, "_tts"):
-                agent._tts = chosen_tts
             await session.say(fallback_msg)
 
     class VoiceRAGAgent(Agent):
