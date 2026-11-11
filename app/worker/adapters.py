@@ -1,3 +1,4 @@
+import re
 import asyncio
 import io
 import wave
@@ -94,50 +95,92 @@ class GeminiTTSAdapter(tts.TTS):
 class _GeminiTTSChunkedStream(tts.ChunkedStream):
     async def _run(self, output_emitter: tts.AudioEmitter) -> None:
         adapter: GeminiTTSAdapter = self._tts  # type: ignore
-        loop = asyncio.get_running_loop()
 
-        def _call_interactions_api():
-            return adapter._client.interactions.create(
-                model=adapter._model,
-                input=[{
-                    "type": "user_input",
-                    "content": [{
-                        "type": "text",
-                        "text": self._input_text,
-                        "annotations": [{
-                            "type": "speech_metadata",
-                            "style": "natural and conversational",
-                        }],
-                    }],
-                }],
-                response_format={"type": "audio"},
-                generation_config={
-                    "speech_config": [
-                        {"voice": adapter._voice},
-                    ]
-                },
-            )
-
-        interaction = await loop.run_in_executor(None, _call_interactions_api)
-        audio_b64 = getattr(interaction.output_audio, "data", None)
-        if not audio_b64:
-            logger.warning("Gemini TTS response contained no audio data")
+        raw_text = (self._input_text or "").strip()
+        if not raw_text:
             return
 
-        wav_bytes = base64.b64decode(audio_b64)
-        with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-            pcm_bytes = wf.readframes(wf.getnframes())
-            rate = wf.getframerate()
-            channels = wf.getnchannels()
+        # Split into natural sentences (. ! ? ؟ । \n) for parallel chunked streaming
+        sentences = [
+            s.strip() for s in re.split(r'(?<=[.!?؟।\n])\s+', raw_text) if s.strip()
+        ]
+        if not sentences:
+            sentences = [raw_text]
 
-        output_emitter.initialize(
-            request_id=utils.shortuuid(),
-            sample_rate=rate,
-            num_channels=channels,
-            mime_type="audio/pcm",
-        )
-        output_emitter.push(pcm_bytes)
-        output_emitter.flush()
+        async def _synth_sentence(sentence: str) -> tuple[bytes, int, int] | None:
+            try:
+                interaction = await adapter._client.aio.interactions.create(
+                    model=adapter._model,
+                    input=[{
+                        "type": "user_input",
+                        "content": [{
+                            "type": "text",
+                            "text": sentence,
+                            "annotations": [{
+                                "type": "speech_metadata",
+                                "style": "natural and conversational",
+                            }],
+                        }],
+                    }],
+                    response_format={"type": "audio"},
+                    generation_config={
+                        "speech_config": [
+                            {"voice": adapter._voice},
+                        ]
+                    },
+                )
+                audio_b64 = getattr(interaction.output_audio, "data", None)
+                if not audio_b64:
+                    return None
+                wav_bytes = base64.b64decode(audio_b64)
+                with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+                    pcm = wf.readframes(wf.getnframes())
+                    rate = wf.getframerate()
+                    channels = wf.getnchannels()
+                return (pcm, rate, channels)
+            except Exception as e:
+                logger.warning(f"Gemini TTS synthesis failed for sentence: '{sentence[:30]}...': {e}")
+                return None
+
+        # Single sentence: synthesize directly
+        if len(sentences) == 1:
+            res = await _synth_sentence(sentences[0])
+            if res:
+                pcm_bytes, rate, channels = res
+                output_emitter.initialize(
+                    request_id=utils.shortuuid(),
+                    sample_rate=rate,
+                    num_channels=channels,
+                    mime_type="audio/pcm",
+                )
+                output_emitter.push(pcm_bytes)
+                output_emitter.flush()
+            return
+
+        # Multi-sentence: pipeline all sentences concurrently across async endpoints
+        tasks = [asyncio.create_task(_synth_sentence(s)) for s in sentences]
+        emitter_initialized = False
+
+        for idx, task in enumerate(tasks):
+            res = await task
+            if not res:
+                continue
+            pcm_bytes, rate, channels = res
+            if not emitter_initialized:
+                output_emitter.initialize(
+                    request_id=utils.shortuuid(),
+                    sample_rate=rate,
+                    num_channels=channels,
+                    mime_type="audio/pcm",
+                )
+                emitter_initialized = True
+            output_emitter.push(pcm_bytes)
+            logger.info(
+                f"[PERF][GeminiTTS] Emitted sentence {idx+1}/{len(sentences)} to audio track"
+            )
+
+        if emitter_initialized:
+            output_emitter.flush()
 
 
 def create_stt_adapter(vad=None, prompt: Optional[str] = None) -> stt.STT:

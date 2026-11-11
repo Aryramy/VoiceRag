@@ -124,10 +124,16 @@ async def entrypoint(ctx: JobContext):
 
         user_lang = detect_user_language(user_transcript)
 
-        # Transliterate Urdu/Nastaliq/Devanagari script only for Hindi/Hinglish
-        # NEVER transliterate authentic Arabic script
+        # For Hindi/Hinglish with Urdu/Devanagari script, spawn background romanization
+        # so RAG graph begins immediately without waiting ~1.0s
         if user_lang == "hi" and re.search(r'[\u0600-\u06FF\u0900-\u097F]', user_transcript):
-            user_transcript = await romanize_script(user_transcript)
+            async def _bg_log_roman(raw_t: str):
+                try:
+                    r_text = await romanize_script(raw_t)
+                    logger.info(f"User Speech Romanized [HI]: '{r_text}'")
+                except Exception:
+                    pass
+            asyncio.create_task(_bg_log_roman(user_transcript))
 
         if user_transcript in recent_transcripts:
             return
@@ -215,10 +221,10 @@ async def entrypoint(ctx: JobContext):
             logger.info(
                 f"TTS Voice Active: {chosen_voice} (Provider: {settings.effective_tts_provider})"
             )
-            await session.say(spoken_text)
+            session.say(spoken_text)
         except Exception as e:
             logger.error(f"Error executing LangGraph pipeline: {e}")
-            await session.say(fallback_msg)
+            session.say(fallback_msg)
 
     class VoiceRAGAgent(Agent):
         async def on_user_turn_completed(
