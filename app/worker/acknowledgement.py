@@ -3,9 +3,8 @@ import logging
 import random
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, AsyncGenerator, Any
+from typing import Dict, List, Optional, Tuple, Any
 from livekit import rtc
-from livekit.agents.voice.speech_handle import SpeechHandle
 from livekit.agents.utils.audio import audio_frames_from_file
 
 logger = logging.getLogger("acknowledgement_manager")
@@ -20,15 +19,16 @@ class AcknowledgementManager:
     'لحظة واحدة' or a gentle chime) while RAG retrieval and LLM reasoning run in the background.
 
     Crucially:
+    - Streams directly to session.output.audio (bypasses AgentSession.say so LiveKit's
+      turn-commit state machine never cuts or interrupts the audio prematurely).
+    - Starts in < 1ms upon confirmed speech end.
+    - Smoothly stopped and cleared the instant real TTS audio is ready.
     - Zero TTS API cost at runtime (pre-recorded static assets in RAM).
-    - Starts in < 1ms upon confirmed end-of-turn detection.
-    - Automatically interrupted and purged the instant real TTS audio is ready.
-    - Zero audio overlap or collision.
+    - Zero audio collision with real assistant speech.
     """
 
     def __init__(self, assets_dir: Path | str = DEFAULT_ASSETS_DIR):
         self.assets_dir = Path(assets_dir)
-        # In-memory storage: lang -> list of (clip_name, list[rtc.AudioFrame])
         self._clips: Dict[str, List[Tuple[str, List[rtc.AudioFrame]]]] = {
             "en": [],
             "hi": [],
@@ -36,7 +36,8 @@ class AcknowledgementManager:
             "neutral": [],
         }
         self._last_played_idx: Dict[str, int] = {}
-        self._current_handle: Optional[SpeechHandle] = None
+        self._play_task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
         self._current_turn_id: Optional[str] = None
         self._is_playing: bool = False
         self._turn_completed: bool = False
@@ -97,39 +98,71 @@ class AcknowledgementManager:
         self._last_played_idx[target_lang] = chosen_idx
         return available[chosen_idx]
 
+    async def _stream_frames_to_output(
+        self,
+        audio_output: Any,
+        frames: List[rtc.AudioFrame],
+        clip_name: str,
+        lang: str
+    ) -> None:
+        """Paces and writes audio frames directly to LiveKit's audio output sink."""
+        try:
+            logger.info(f"[PERF][Ack] Direct audio stream started: {clip_name} ({len(frames)} frames)")
+            for frame in frames:
+                if self._stop_event.is_set():
+                    logger.info(f"[PERF][Ack] Direct audio stream stopped early: {clip_name}")
+                    break
+                await audio_output.capture_frame(frame)
+                frame_dur = getattr(frame, "duration", 0.02) or 0.02
+                await asyncio.sleep(frame_dur * 0.92)
+
+            if not self._stop_event.is_set() and hasattr(audio_output, "flush"):
+                audio_output.flush()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.warning(f"Error streaming acknowledgement audio frames: {e}")
+        finally:
+            self._is_playing = False
+
     async def trigger_acknowledgement(
         self,
         session: Any,
         lang: str,
         turn_id: str,
         t_user_speech_end: float,
-    ) -> Optional[SpeechHandle]:
+    ) -> Optional[asyncio.Task]:
         """Plays a pre-recorded acknowledgement immediately after confirmed user speech end.
 
-        Runs concurrently with background RAG retrieval + LLM synthesis.
+        Streams directly to session.output.audio to bypass LiveKit's turn-commit interruption logic.
         """
         async with self._lock:
             if not self._initialized:
                 await self.initialize()
 
             # Prevent duplicate triggers for the same turn
-            if self._current_turn_id == turn_id and (self._is_playing or self._current_handle):
+            if self._current_turn_id == turn_id and self._is_playing:
                 return None
 
             # If real response has somehow already finished before ack started, skip it
             if self._turn_completed:
                 return None
 
-            # Interrupt any lingering previous acknowledgement
-            if self._current_handle and not self._current_handle.done():
-                try:
-                    self._current_handle.interrupt(force=True)
-                except Exception:
-                    pass
+            # Stop any previous playing task
+            if self._play_task and not self._play_task.done():
+                self._stop_event.set()
+                self._play_task.cancel()
+                self._play_task = None
+
+            audio_output = getattr(getattr(session, "output", None), "audio", None)
+            if not audio_output:
+                logger.warning("session.output.audio not available for acknowledgement playback")
+                return None
 
             self._current_turn_id = turn_id
             self._turn_completed = False
             self._is_playing = True
+            self._stop_event.clear()
 
             clip_name, frames = self.select_clip(lang)
             if not frames:
@@ -144,52 +177,44 @@ class AcknowledgementManager:
                 f"('{clip_name}', lang={lang}) in {ack_trigger_delay_ms:.1f}ms"
             )
 
-            async def _frame_generator() -> AsyncGenerator[rtc.AudioFrame, None]:
-                for frame in frames:
-                    yield frame
+            # Spawn direct playback task
+            self._play_task = asyncio.create_task(
+                self._stream_frames_to_output(audio_output, frames, clip_name, lang)
+            )
+            return self._play_task
 
-            try:
-                handle = session.say(
-                    text="",
-                    audio=_frame_generator(),
-                    allow_interruptions=True,
-                    add_to_chat_ctx=False,
-                )
-                self._current_handle = handle
-
-                def _on_done(h: Any) -> None:
-                    self._is_playing = False
-
-                handle.add_done_callback(_on_done)
-                return handle
-            except Exception as e:
-                logger.warning(f"Failed to play acknowledgement clip: {e}")
-                self._is_playing = False
-                return None
-
-    async def stop_acknowledgement(self, reason: str = "real_tts_ready") -> None:
+    async def stop_acknowledgement(self, reason: str = "real_tts_ready", session: Any = None) -> None:
         """Stops and clears any active acknowledgement audio immediately without overlap."""
         async with self._lock:
             self._turn_completed = True
-            handle = self._current_handle
-            self._current_handle = None
+            self._stop_event.set()
+
+            if self._play_task and not self._play_task.done():
+                logger.info(f"[PERF][Ack] Stopping acknowledgement ({reason}) for seamless transition to real speech")
+                self._play_task.cancel()
+                try:
+                    await asyncio.wait_for(asyncio.shield(self._play_task), timeout=0.1)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                    pass
+                self._play_task = None
+
             self._is_playing = False
 
-            if handle and not handle.done():
-                try:
-                    logger.info(f"[PERF][Ack] Stopping acknowledgement ({reason}) for seamless transition to real speech")
-                    handle.interrupt(force=True)
-                except Exception as e:
-                    logger.debug(f"Acknowledgement interrupt notice: {e}")
+            if session:
+                audio_output = getattr(getattr(session, "output", None), "audio", None)
+                if audio_output and hasattr(audio_output, "clear_buffer"):
+                    audio_output.clear_buffer()
 
-    def reset_turn(self) -> None:
-        """Resets turn tracking state."""
+    def reset_turn(self, session: Any = None) -> None:
+        """Resets turn tracking state and cancels audio."""
         self._turn_completed = False
         self._current_turn_id = None
         self._is_playing = False
-        if self._current_handle and not self._current_handle.done():
-            try:
-                self._current_handle.interrupt(force=True)
-            except Exception:
-                pass
-        self._current_handle = None
+        self._stop_event.set()
+        if self._play_task and not self._play_task.done():
+            self._play_task.cancel()
+            self._play_task = None
+        if session:
+            audio_output = getattr(getattr(session, "output", None), "audio", None)
+            if audio_output and hasattr(audio_output, "clear_buffer"):
+                audio_output.clear_buffer()

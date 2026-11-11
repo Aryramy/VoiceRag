@@ -37,7 +37,6 @@ def test_acknowledgement_selection_and_rotation():
 
         # Rotation: consecutive selections should rotate between variants
         selections = [mgr.select_clip("en")[0] for _ in range(5)]
-        # Ensure not all 5 are identical
         assert len(set(selections)) > 1
     asyncio.run(_test())
 
@@ -46,22 +45,30 @@ def test_acknowledgement_stop_and_reset():
         mgr = AcknowledgementManager()
         await mgr.initialize()
 
-        class MockHandle:
+        class MockAudioOutput:
             def __init__(self):
-                self.interrupted = False
-                self._done = False
-            def done(self):
-                return self._done
-            def interrupt(self, force=True):
-                self.interrupted = True
-                self._done = True
+                self.frames = []
+                self.cleared = False
+            async def capture_frame(self, frame):
+                self.frames.append(frame)
+            def flush(self):
+                pass
+            def clear_buffer(self):
+                self.cleared = True
 
-        mock_h = MockHandle()
-        mgr._current_handle = mock_h
-        mgr._is_playing = True
+        class MockSession:
+            def __init__(self):
+                class Out:
+                    audio = MockAudioOutput()
+                self.output = Out()
 
-        await mgr.stop_acknowledgement(reason="test_stop")
-        assert mock_h.interrupted is True
+        session = MockSession()
+        task = await mgr.trigger_acknowledgement(session, "en", "turn_1", 0.0)
+        assert task is not None
+        assert mgr._is_playing is True
+
+        await asyncio.sleep(0.05)
+        await mgr.stop_acknowledgement(reason="test_stop", session=session)
         assert mgr._is_playing is False
-        assert mgr._current_handle is None
+        assert session.output.audio.cleared is True
     asyncio.run(_test())

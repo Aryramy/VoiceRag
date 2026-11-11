@@ -244,11 +244,11 @@ async def entrypoint(ctx: JobContext):
             )
 
             # Smoothly stop acknowledgement before playing actual response (zero audio collision)
-            await ack_manager.stop_acknowledgement(reason="real_tts_ready")
+            await ack_manager.stop_acknowledgement(reason="real_tts_ready", session=session)
             session.say(spoken_text)
         except Exception as e:
             logger.error(f"Error executing LangGraph pipeline: {e}")
-            await ack_manager.stop_acknowledgement(reason="pipeline_error")
+            await ack_manager.stop_acknowledgement(reason="pipeline_error", session=session)
             session.say(fallback_msg)
 
     class VoiceRAGAgent(Agent):
@@ -284,7 +284,7 @@ async def entrypoint(ctx: JobContext):
     def on_user_state_changed(ev):
         # User started speaking again -> immediately reset and stop any acknowledgement
         if getattr(ev, "new_state", "") == "speaking":
-            ack_manager.reset_turn()
+            ack_manager.reset_turn(session=session)
 
 if __name__ == "__main__":
     cli.run_app(server)
