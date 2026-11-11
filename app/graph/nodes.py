@@ -1,6 +1,15 @@
 import re
 import logging
 from typing import Dict, Any, List
+
+try:
+    from google import genai
+    from google.genai import types
+    _GENAI_AVAILABLE = True
+except ImportError:
+    genai = None  # type: ignore
+    types = None  # type: ignore
+    _GENAI_AVAILABLE = False
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
@@ -85,16 +94,37 @@ async def romanize_script(text: str, api_key: str | None = None) -> str:
     if detect_user_language(text) == "ar":
         return text
 
+    sys_msg = (
+        "You are a Roman Urdu / Hinglish transliterator. Your job is to convert Urdu or Hindi text into natural Roman English characters (Latin script). "
+        "Output ONLY the transliterated text in standard English alphabet without quotes, explanations, or Arabic/Devanagari letters."
+    )
+
+    # 1. High-speed Gemini Flash path
+    if settings.effective_llm_provider == "gemini" and _GENAI_AVAILABLE and settings.GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            res = await client.aio.models.generate_content(
+                model=settings.GEMINI_FAST_MODEL or "gemini-3.1-flash-lite",
+                contents=f"Convert to Roman script: {text}",
+                config=types.GenerateContentConfig(
+                    system_instruction=sys_msg,
+                    temperature=0.0
+                )
+            )
+            romanized = res.text.strip() if res.text else ""
+            romanized = re.sub(r'^["\']|["\']$', '', romanized).strip()
+            if romanized and not re.search(r'[\u0600-\u06FF\u0900-\u097F]', romanized):
+                return romanized
+        except Exception as e:
+            logger.warning(f"Gemini script romanization failed ({e}), using OpenAI fallback...")
+
+    # 2. OpenAI / OpenRouter fallback path
     try:
         llm = ChatOpenAI(
             model=settings.effective_fast_model,
             openai_api_base=settings.effective_llm_base_url,
             openai_api_key=api_key or settings.effective_llm_api_key,
             temperature=0.0
-        )
-        sys_msg = (
-            "You are a Roman Urdu / Hinglish transliterator. Your job is to convert Urdu or Hindi text into natural Roman English characters (Latin script). "
-            "Output ONLY the transliterated text in standard English alphabet without quotes, explanations, or Arabic/Devanagari letters."
         )
         res = await llm.ainvoke([SystemMessage(content=sys_msg), HumanMessage(content=f"Convert to Roman script: {text}")])
         romanized = res.content.strip() if hasattr(res, "content") else str(res).strip()
@@ -114,27 +144,43 @@ async def rewrite_query_node(state: AgenticVoiceState, config: RunnableConfig | 
         else settings.effective_llm_api_key
     ) or settings.effective_llm_api_key
 
+    history = state.get("messages", [])[-4:]
+    prompt = (
+        f"You are a query preprocessor for a semantic vector database.\n"
+        f"Rewrite the following spoken user query into a concise, natural semantic search phrase optimized for text embedding retrieval against an English enterprise knowledge base.\n"
+        f"Strict rules:\n"
+        f"1. DO NOT write SQL, Cypher, code, operators, or boolean logic.\n"
+        f"2. DO NOT add conversational filler, quotes, or punctuation.\n"
+        f"3. If the user query is in Hindi, Urdu, Hinglish, or Arabic (including Gulf/Qatari Arabic), map the core intent into clear English search terms "
+        f"(e.g. 'phone paani mein girna' -> 'phone water liquid damage warranty coverage', 'refund aane mein kitne din lagenge' -> 'refund processing days timeline', "
+        f"'أبي أرجع منتج خربان' -> 'return defective product warranty refund policy') so it matches English documents in the vector store.\n"
+        f"4. Return ONLY the plain text search phrase.\n\n"
+        f"Conversation History: {history}\n"
+        f"User Query: {raw}"
+    )
+
+    # 1. High-speed Gemini Flash path (ultra-low TTFT)
+    if settings.effective_llm_provider == "gemini" and _GENAI_AVAILABLE and settings.GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            res = await client.aio.models.generate_content(
+                model=settings.GEMINI_FAST_MODEL or "gemini-3.1-flash-lite",
+                contents=prompt
+            )
+            rewritten = res.text.strip() if res.text else raw
+            rewritten = re.sub(r'^["\']|["\']$', '', rewritten).strip()
+            if rewritten:
+                return {"rewritten_query": rewritten}
+        except Exception as e:
+            logger.warning(f"Gemini Flash query rewrite failed ({e}), using OpenAI/OpenRouter fallback...")
+
+    # 2. OpenAI / OpenRouter fallback path
     try:
         llm = ChatOpenAI(
             model=settings.effective_fast_model,
             openai_api_base=settings.effective_llm_base_url,
             openai_api_key=api_key,
             temperature=0.0
-        )
-        history = state.get("messages", [])[-4:]
-        
-        prompt = (
-            f"You are a query preprocessor for a semantic vector database.\n"
-            f"Rewrite the following spoken user query into a concise, natural semantic search phrase optimized for text embedding retrieval against an English enterprise knowledge base.\n"
-            f"Strict rules:\n"
-            f"1. DO NOT write SQL, Cypher, code, operators, or boolean logic.\n"
-            f"2. DO NOT add conversational filler, quotes, or punctuation.\n"
-            f"3. If the user query is in Hindi, Urdu, Hinglish, or Arabic (including Gulf/Qatari Arabic), map the core intent into clear English search terms "
-            f"(e.g. 'phone paani mein girna' -> 'phone water liquid damage warranty coverage', 'refund aane mein kitne din lagenge' -> 'refund processing days timeline', "
-            f"'أبي أرجع منتج خربان' -> 'return defective product warranty refund policy') so it matches English documents in the vector store.\n"
-            f"4. Return ONLY the plain text search phrase.\n\n"
-            f"Conversation History: {history}\n"
-            f"User Query: {raw}"
         )
         res = await llm.ainvoke([HumanMessage(content=prompt)])
         rewritten = res.content.strip() if hasattr(res, "content") else str(res).strip()
@@ -226,15 +272,7 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
     # For Hindi/Urdu, pre-clean query if in Arabic/Urdu/Devanagari script so LLM sees Roman Latin script
     clean_query = await romanize_script(query, api_key=api_key) if detected_lang == "hi" else query
 
-    try:
-        llm = ChatOpenAI(
-            model=settings.effective_chat_model,
-            openai_api_base=settings.effective_llm_base_url,
-            openai_api_key=api_key,
-            temperature=0.1
-        )
-        
-        sys_prompt = f"""You are a warm, cool, calm, happy, and jolly AI voice assistant. You speak naturally like a helpful colleague on a phone call.
+    sys_prompt = f"""You are a warm, cool, calm, happy, and jolly AI voice assistant. You speak naturally like a helpful colleague on a phone call.
 
 CRITICAL OPERATING RULES:
 
@@ -271,43 +309,86 @@ CRITICAL OPERATING RULES:
 Retrieved Knowledge Base Context:
 {context_str}"""
 
-        prompt_messages = [SystemMessage(content=sys_prompt)]
-        history_msgs = state.get("messages", [])
-        for m in history_msgs[-6:]:
-            prompt_messages.append(m)
-        if not history_msgs or history_msgs[-1].content != clean_query:
-            prompt_messages.append(HumanMessage(content=clean_query))
+    history_msgs = state.get("messages", [])
+    answer_text = None
 
-        response = await llm.ainvoke(prompt_messages)
-        answer_text = response.content if hasattr(response, "content") else str(response)
-        
-        # Fail-safe romanization check strictly for Hindi/Hinglish mode
-        if detected_lang == "hi" and answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
-            answer_text = await romanize_script(answer_text, api_key=api_key)
-    except Exception as e:
-        logger.warning(f"Answer generation primary LLM call failed ({e}), checking fallback provider...")
-        answer_text = None
-        if settings.CHEAPER_INFERENCE_API_KEY and "openrouter" in str(settings.effective_llm_base_url).lower():
-            try:
-                fallback_llm = ChatOpenAI(
-                    model=settings.CHEAPER_INFERENCE_MODEL or "deepseek-v4-flash-0731",
-                    openai_api_base=settings.CHEAPER_INFERENCE_BASE_URL,
-                    openai_api_key=settings.CHEAPER_INFERENCE_API_KEY,
+    # 1. High-speed Gemini Flash acceleration
+    if settings.effective_llm_provider == "gemini" and _GENAI_AVAILABLE and settings.GEMINI_API_KEY:
+        try:
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            gemini_contents = []
+            for m in history_msgs[-6:]:
+                role = "model" if isinstance(m, AIMessage) else "user"
+                c_text = m.content if hasattr(m, "content") else str(m)
+                gemini_contents.append(types.Content(role=role, parts=[types.Part.from_text(text=str(c_text))]))
+            if not history_msgs or history_msgs[-1].content != clean_query:
+                gemini_contents.append(types.Content(role="user", parts=[types.Part.from_text(text=str(clean_query))]))
+
+            res = await client.aio.models.generate_content(
+                model=settings.GEMINI_CHAT_MODEL or "gemini-3.1-flash-lite",
+                contents=gemini_contents,
+                config=types.GenerateContentConfig(
+                    system_instruction=sys_prompt,
                     temperature=0.0
                 )
-                fb_res = await fallback_llm.ainvoke(prompt_messages)
-                answer_text = fb_res.content if hasattr(fb_res, "content") else str(fb_res)
-                logger.info("Fallback LLM call to CheaperInference succeeded.")
-            except Exception as e2:
-                logger.warning(f"Fallback LLM call also failed ({e2})")
+            )
+            answer_text = res.text.strip() if res.text else None
+            if detected_lang == "hi" and answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
+                answer_text = await romanize_script(answer_text, api_key=api_key)
+        except Exception as e:
+            logger.warning(f"Gemini Flash answer generation failed ({e}), using OpenAI/OpenRouter fallback...")
+            answer_text = None
 
-        if not answer_text:
-            if detected_lang == "ar":
-                answer_text = "عذراً، لم أجد معلومات محددة بخصوص ذلك في قاعدة بياناتنا."
-            elif detected_lang == "hi":
-                answer_text = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
-            else:
-                answer_text = FALLBACK_STRICT_RESPONSE
+    # 2. OpenAI / OpenRouter fallback path
+    if not answer_text:
+        try:
+            llm = ChatOpenAI(
+                model=settings.effective_chat_model,
+                openai_api_base=settings.effective_llm_base_url,
+                openai_api_key=api_key,
+                temperature=0.1
+            )
+            prompt_messages = [SystemMessage(content=sys_prompt)]
+            for m in history_msgs[-6:]:
+                prompt_messages.append(m)
+            if not history_msgs or history_msgs[-1].content != clean_query:
+                prompt_messages.append(HumanMessage(content=clean_query))
+
+            response = await llm.ainvoke(prompt_messages)
+            answer_text = response.content if hasattr(response, "content") else str(response)
+            
+            # Fail-safe romanization check strictly for Hindi/Hinglish mode
+            if detected_lang == "hi" and answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
+                answer_text = await romanize_script(answer_text, api_key=api_key)
+        except Exception as e:
+            logger.warning(f"Answer generation primary LLM call failed ({e}), checking fallback provider...")
+            answer_text = None
+            if settings.CHEAPER_INFERENCE_API_KEY and "openrouter" in str(settings.effective_llm_base_url).lower():
+                try:
+                    fallback_llm = ChatOpenAI(
+                        model=settings.CHEAPER_INFERENCE_MODEL or "deepseek-v4-flash-0731",
+                        openai_api_base=settings.CHEAPER_INFERENCE_BASE_URL,
+                        openai_api_key=settings.CHEAPER_INFERENCE_API_KEY,
+                        temperature=0.0
+                    )
+                    prompt_messages = [SystemMessage(content=sys_prompt)]
+                    for m in history_msgs[-6:]:
+                        prompt_messages.append(m)
+                    if not history_msgs or history_msgs[-1].content != clean_query:
+                        prompt_messages.append(HumanMessage(content=clean_query))
+                    fb_res = await fallback_llm.ainvoke(prompt_messages)
+                    answer_text = fb_res.content if hasattr(fb_res, "content") else str(fb_res)
+                    logger.info("Fallback LLM call to CheaperInference succeeded.")
+                except Exception as e2:
+                    logger.warning(f"Fallback LLM call also failed ({e2})")
+
+            if not answer_text:
+                if detected_lang == "ar":
+                    answer_text = "عذراً، لم أجد معلومات محددة بخصوص ذلك في قاعدة بياناتنا."
+                elif detected_lang == "hi":
+                    answer_text = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
+                else:
+                    answer_text = FALLBACK_STRICT_RESPONSE
     
     citations = [
         {

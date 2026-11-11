@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     GEMINI_TTS_VOICE_AR: str = "Leda"
     GEMINI_TTS_DEFAULT_VOICE: str = "Kore"
 
+    # LLM Provider selection: "gemini" | "openrouter" | "openai"
+    LLM_PROVIDER: str = "gemini"
+    GEMINI_CHAT_MODEL: str = "gemini-3.1-flash-lite"
+    GEMINI_FAST_MODEL: str = "gemini-3.1-flash-lite"
+
     # CheaperInference & Audio Cascade configuration
     # CheaperInference & Audio Cascade configuration (Secondary fallback when OpenRouter key is absent)
     CHEAPER_INFERENCE_API_KEY: str = ""
@@ -164,7 +169,16 @@ class Settings(BaseSettings):
             return self.effective_tts_voice
 
     @property
+    def effective_llm_provider(self) -> str:
+        prov = (self.LLM_PROVIDER or "gemini").lower().strip()
+        if prov == "gemini" and self.GEMINI_API_KEY:
+            return "gemini"
+        return "openrouter" if self.OPENROUTER_API_KEY else "openai"
+
+    @property
     def effective_llm_api_key(self) -> str:
+        if self.effective_llm_provider == "gemini":
+            return self.GEMINI_API_KEY
         return self.OPENROUTER_API_KEY or self.LLM_API_KEY or self.CHEAPER_INFERENCE_API_KEY
 
     @property
@@ -175,12 +189,16 @@ class Settings(BaseSettings):
 
     @property
     def effective_chat_model(self) -> str:
+        if self.effective_llm_provider == "gemini":
+            return self.GEMINI_CHAT_MODEL or "gemini-3.1-flash-lite"
         if "cheaperinference" in self.effective_llm_base_url.lower():
             return self.LLM_CHAT_MODEL or "gpt-4o-mini"
         return self.OPENROUTER_CHAT_MODEL or "meta-llama/llama-3.1-8b-instruct"
 
     @property
     def effective_fast_model(self) -> str:
+        if self.effective_llm_provider == "gemini":
+            return self.GEMINI_FAST_MODEL or "gemini-3.1-flash-lite"
         if "cheaperinference" in self.effective_llm_base_url.lower():
             return self.LLM_FAST_MODEL or "gpt-4o-mini"
         return self.OPENROUTER_FAST_MODEL or "meta-llama/llama-3.1-8b-instruct"
