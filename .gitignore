@@ -16,6 +16,8 @@ __pycache__/
 
 # SQLite Database
 *.db
+*.db-shm
+*.db-wal
 *.sqlite
 *.sqlite3
 
@@ -34,6 +36,7 @@ node_modules/
 frontend/node_modules/
 frontend/.next/
 frontend/out/
+frontend/tsconfig.tsbuildinfo
 .next/
 
 # Agent internals & system

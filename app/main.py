@@ -1,11 +1,17 @@
+import logging
 import os
+import time
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from livekit.api import AccessToken, VideoGrants
 from app.config import settings
-from app.core.database import init_db
+from app.core.database import init_db, close_db_connection
+from app.core.qdrant_client import search_qdrant, init_qdrant, get_embeddings
+from app.graph.nodes import warm_llm_clients
 from app.api.upload import router as upload_router
 from app.api.chat import router as chat_router
+
+logger = logging.getLogger("fastapi_main")
 
 app = FastAPI(
     title="Agentic RAG Voice AI Backend",
@@ -20,13 +26,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.on_event("startup")
 async def on_startup():
+    t0 = time.perf_counter()
     await init_db()
+    await init_qdrant()
+    get_embeddings()
+    warm_llm_clients()
+    logger.info(f"[PERF][fastapi_startup] Prewarmed SQLite WAL, Qdrant, Embeddings & LLMs in {(time.perf_counter() - t0)*1000:.1f}ms")
+
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    await close_db_connection()
+
 
 # Register Phase 5 upload and multimodal chat routers
 app.include_router(upload_router)
 app.include_router(chat_router)
+
 
 @app.get("/health")
 async def health_check():
@@ -37,13 +56,18 @@ async def health_check():
         "collection": settings.QDRANT_COLLECTION_NAME
     }
 
+
 @app.post("/api/internal-search")
 async def internal_search_endpoint(payload: dict):
-    from app.core.qdrant_client import search_qdrant
+    t0 = time.perf_counter()
     query = payload.get("query", "")
     top_k = payload.get("top_k", 3)
-    min_score = payload.get("min_score_threshold", 0.45)
+    min_score = payload.get("min_score_threshold", settings.FALLBACK_SCORE_THRESHOLD)
     docs, max_score = await search_qdrant(query=query, top_k=top_k, min_score_threshold=min_score)
+    logger.info(
+        f"[PERF][internal_search] total={(time.perf_counter() - t0)*1000:.2f}ms "
+        f"hits={len(docs)} max_score={max_score:.3f}"
+    )
     return {"docs": docs, "max_score": max_score}
 
 @app.get("/api/get-join-token")

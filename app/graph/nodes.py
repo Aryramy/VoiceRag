@@ -11,6 +11,10 @@ from app.config import settings
 logger = logging.getLogger("graph_nodes")
 FALLBACK_STRICT_RESPONSE = settings.FALLBACK_STRICT_RESPONSE
 
+def warm_llm_clients(api_key: str | None = None) -> None:
+    pass
+
+
 # Regex for Arabic script and Urdu-specific characters
 ARABIC_SCRIPT_REGEX = re.compile(r'[\u0600-\u06FF]')
 URDU_SPECIFIC_CHARS = set('ٹڈڑںےپچگھ')

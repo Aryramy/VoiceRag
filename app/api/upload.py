@@ -3,7 +3,6 @@ import uuid
 import re
 from fastapi import APIRouter, UploadFile, File, BackgroundTasks, HTTPException
 from pypdf import PdfReader
-from langchain_openai import OpenAIEmbeddings
 from qdrant_client.models import PointStruct, Filter, FieldCondition, MatchValue
 from app.core.qdrant_client import client as qdrant_client, COLLECTION_NAME, init_qdrant, get_embeddings
 from app.core.database import record_document, list_documents, delete_document
