@@ -38,8 +38,10 @@ from langchain_core.messages import HumanMessage, AIMessage
 from app.graph.workflow import graph
 from app.graph.nodes import detect_user_language, detect_is_hinglish, romanize_script
 from app.core.database import get_chat_history, save_chat_message
+import time
 from app.worker.audio_pipeline import strip_citations_for_tts
 from app.worker.adapters import create_stt_adapter, create_tts_adapter
+from app.worker.acknowledgement import AcknowledgementManager
 
 logger = logging.getLogger("livekit_worker")
 logging.basicConfig(level=logging.INFO)
@@ -114,7 +116,11 @@ async def entrypoint(ctx: JobContext):
         turn_handling=turn_handling
     )
 
-    # 5. Async processing worker for user speech
+    # 5. Initialize Pre-recorded Acknowledgement Manager (0ms disk I/O, cached in RAM)
+    ack_manager = AcknowledgementManager()
+    await ack_manager.initialize()
+
+    # Async processing worker for user speech
     recent_transcripts = set()
 
     async def handle_user_query(user_transcript: str):
@@ -141,6 +147,21 @@ async def entrypoint(ctx: JobContext):
         recent_transcripts.add(user_transcript)
         if len(recent_transcripts) > 50:
             recent_transcripts.clear()
+
+        t_speech_committed = time.perf_counter()
+        turn_id = f"{ctx.room.name}_{int(t_speech_committed * 1000)}"
+
+        # ⚡ Immediate Pre-Recorded Acknowledgement:
+        # Trigger short conversational cue (e.g. "One moment", "Ek second", "لحظة واحدة")
+        # immediately to eliminate perceived waiting time while RAG + LLM run in parallel.
+        asyncio.create_task(
+            ack_manager.trigger_acknowledgement(
+                session=session,
+                lang=user_lang,
+                turn_id=turn_id,
+                t_user_speech_end=t_speech_committed,
+            )
+        )
 
         logger.info(f"User Speech Committed [{user_lang.upper()}]: '{user_transcript}'")
         
@@ -221,9 +242,13 @@ async def entrypoint(ctx: JobContext):
             logger.info(
                 f"TTS Voice Active: {chosen_voice} (Provider: {settings.effective_tts_provider})"
             )
+
+            # Smoothly stop acknowledgement before playing actual response (zero audio collision)
+            await ack_manager.stop_acknowledgement(reason="real_tts_ready")
             session.say(spoken_text)
         except Exception as e:
             logger.error(f"Error executing LangGraph pipeline: {e}")
+            await ack_manager.stop_acknowledgement(reason="pipeline_error")
             session.say(fallback_msg)
 
     class VoiceRAGAgent(Agent):
@@ -254,6 +279,12 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"[LiveKit Speech Event] is_final={ev.is_final}, transcript='{ev.transcript}'")
         if getattr(ev, "is_final", True) and getattr(ev, "transcript", ""):
             asyncio.create_task(handle_user_query(ev.transcript))
+
+    @session.on("user_state_changed")
+    def on_user_state_changed(ev):
+        # User started speaking again -> immediately reset and stop any acknowledgement
+        if getattr(ev, "new_state", "") == "speaking":
+            ack_manager.reset_turn()
 
 if __name__ == "__main__":
     cli.run_app(server)
