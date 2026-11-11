@@ -1,6 +1,6 @@
 import re
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from langchain_core.runnables import RunnableConfig
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 from langchain_openai import ChatOpenAI
@@ -10,6 +10,10 @@ from app.config import settings
 
 logger = logging.getLogger("graph_nodes")
 FALLBACK_STRICT_RESPONSE = settings.FALLBACK_STRICT_RESPONSE
+
+# Regex for Arabic script and Urdu-specific characters
+ARABIC_SCRIPT_REGEX = re.compile(r'[\u0600-\u06FF]')
+URDU_SPECIFIC_CHARS = set('ٹڈڑںےپچگھ')
 
 # Distinct Hindi/Urdu keywords in Roman script that do not collide with English
 HINGLISH_KEYWORDS = {
@@ -24,19 +28,59 @@ HINGLISH_KEYWORDS = {
     'namaste', 'shukriya', 'dhanyawad', 'mujhe', 'mera', 'meri', 'mere', 'baare', 'jankari', 'maaf', 'kijiye'
 }
 
-def detect_is_hinglish(text: str) -> bool:
-    """Detects whether text contains Hindi/Hinglish words or Devanagari/Hinglish scripts."""
+# Distinct Arabic / Gulf phrasing keywords in Latin transliteration
+ARABIC_KEYWORDS = {
+    'marhaba', 'shukran', 'ahlan', 'hala', 'kayf', 'keif', 'keifik', 'shlonak', 
+    'shlonik', 'yaatik', 'afia', 'mishkoor', 'ayesh', 'sheeno', 'abi', 'ibghi', 'waddi'
+}
+
+def detect_user_language(text: str, history: List[Any] | None = None) -> str:
+    """Accurately detects whether text is English ('en'), Hindi/Hinglish ('hi'), or Arabic ('ar')."""
     if not text:
-        return False
-    if re.search(r'[\u0900-\u097F\u0600-\u06FF]', text):
-        return True
+        return "en"
+    
+    # Check for Arabic script
+    if ARABIC_SCRIPT_REGEX.search(text):
+        if any(c in text for c in URDU_SPECIFIC_CHARS):
+            return "hi"
+        return "ar"
+
     words = set(re.findall(r'\b[a-zA-Z]+\b', text.lower()))
-    return bool(words & HINGLISH_KEYWORDS)
+    
+    # Check Latin Arabic keywords (transliterated Arabic / Gulf phrases)
+    if bool(words & ARABIC_KEYWORDS):
+        return "ar"
+
+    # Check Hindi/Hinglish (Devanagari or Hinglish Roman vocabulary)
+    if re.search(r'[\u0900-\u097F]', text) or bool(words & HINGLISH_KEYWORDS):
+        return "hi"
+
+    # Fallback to history if current query is neutral/ambiguous (e.g. "yes", "tell me more")
+    if history:
+        for m in reversed(history[-4:]):
+            content = str(getattr(m, "content", "") or "")
+            if content:
+                lang = detect_user_language(content, history=None)
+                if lang != "en":
+                    return lang
+
+    return "en"
+
+def detect_is_hinglish(text: str) -> bool:
+    """Backward compatibility helper for Hinglish detection."""
+    return detect_user_language(text) == "hi"
 
 async def romanize_script(text: str, api_key: str | None = None) -> str:
-    """Translates/transliterates any Arabic/Urdu or Devanagari script into natural, colloquial Roman Hinglish."""
+    """Translates/transliterates any Urdu Nastaliq or Devanagari script into natural, colloquial Roman Hinglish.
+    Does NOT modify authentic Arabic script.
+    """
     if not text or not re.search(r'[\u0600-\u06FF\u0900-\u097F]', text):
         return text
+    
+    # Do NOT romanize Arabic text
+    if detect_user_language(text) == "ar":
+        return text
+
     try:
         llm = ChatOpenAI(
             model=settings.effective_fast_model,
@@ -81,7 +125,9 @@ async def rewrite_query_node(state: AgenticVoiceState, config: RunnableConfig | 
             f"Strict rules:\n"
             f"1. DO NOT write SQL, Cypher, code, operators, or boolean logic.\n"
             f"2. DO NOT add conversational filler, quotes, or punctuation.\n"
-            f"3. If the user query is in Hindi, Urdu, or Hinglish, map the core intent into clear English search terms (e.g. 'phone paani mein girna' -> 'phone water liquid damage warranty coverage', 'refund aane mein kitne din lagenge' -> 'refund processing days timeline') so it matches English documents in the vector store.\n"
+            f"3. If the user query is in Hindi, Urdu, Hinglish, or Arabic (including Gulf/Qatari Arabic), map the core intent into clear English search terms "
+            f"(e.g. 'phone paani mein girna' -> 'phone water liquid damage warranty coverage', 'refund aane mein kitne din lagenge' -> 'refund processing days timeline', "
+            f"'أبي أرجع منتج خربان' -> 'return defective product warranty refund policy') so it matches English documents in the vector store.\n"
             f"4. Return ONLY the plain text search phrase.\n\n"
             f"Conversation History: {history}\n"
             f"User Query: {raw}"
@@ -141,14 +187,19 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
         context_str = "NO NEW KNOWLEDGE BASE DOCUMENTS RETURNED"
 
     # Analyze language of current query and recent conversation turns
-    user_is_hinglish = detect_is_hinglish(query)
-    if not user_is_hinglish and state.get("messages"):
-        for m in reversed(state.get("messages")[-4:]):
-            if isinstance(m, HumanMessage) and detect_is_hinglish(str(m.content)):
-                user_is_hinglish = True
-                break
+    detected_lang = detect_user_language(query, history=state.get("messages", []))
 
-    if user_is_hinglish:
+    if detected_lang == "ar":
+        language_directive = (
+            "CRITICAL LANGUAGE MIRRORING ENFORCEMENT:\n"
+            "DETECTED USER LANGUAGE: ARABIC (Modern Standard / Gulf / Qatari Arabic).\n"
+            "MANDATORY: The user spoke in Arabic. You MUST output your final answer strictly in natural, professional, and friendly Arabic script (العربية).\n"
+            "DIALECT AWARENESS: Maintain natural conversational Gulf/Qatari warmth (e.g. 'أهلاً بك', 'تقدر ترجع المنتج خلال 30 يوم', 'المبلغ يرجع لحسابك خلال 5 إلى 7 أيام عمل').\n"
+            "SCRIPT: Write exclusively in clear Arabic letters. NEVER write in English alphabet or Latin transliteration.\n"
+            "CRITICAL LENGTH LIMIT: Strictly maximum 1 or 2 short, conversational sentences (total under 30 words). Never output 3 or more sentences.\n"
+            "NO MARKDOWN: Never use bullet points, bolding, numbered lists, or asterisks."
+        )
+    elif detected_lang == "hi":
         language_directive = (
             "CRITICAL LANGUAGE MIRRORING ENFORCEMENT:\n"
             "DETECTED USER LANGUAGE: HINGLISH (Hindi/Urdu/Hinglish in Roman Latin script).\n"
@@ -165,11 +216,11 @@ async def generate_answer_node(state: AgenticVoiceState, config: RunnableConfig 
         language_directive = (
             "CRITICAL LANGUAGE MIRRORING ENFORCEMENT:\n"
             "DETECTED USER LANGUAGE: PURE ENGLISH.\n"
-            "MANDATORY: Reply strictly in natural, fluent English. Do not use Hindi/Hinglish."
+            "MANDATORY: Reply strictly in natural, fluent English. Do not use Hindi or Arabic."
         )
 
-    # Pre-clean query if in Arabic/Urdu/Devanagari script so LLM never sees raw non-Latin text
-    clean_query = await romanize_script(query, api_key=api_key)
+    # For Hindi/Urdu, pre-clean query if in Arabic/Urdu/Devanagari script so LLM sees Roman Latin script
+    clean_query = await romanize_script(query, api_key=api_key) if detected_lang == "hi" else query
 
     try:
         llm = ChatOpenAI(
@@ -186,20 +237,14 @@ CRITICAL OPERATING RULES:
 1. DYNAMIC LANGUAGE MIRRORING (STRICT SINGLE-MODE):
    - Analyze the user's input language and tone.
    - ENGLISH MODE: If the user speaks in English, reply ONLY in natural, fluent English.
-   - HINGLISH MODE: If the user speaks or requests Hindi/Urdu/Hinglish (using words like 'agar', 'kya', 'paani', 'mein', 'hai', 'achcha', 'kese', 'kab', 'kahan', 'thik he', 'aap', 'tum', 'hum', 'batlao', 'kisse', 'kun') or Devanagari/Urdu script, reply ONLY in natural, everyday Colloquial Roman Hinglish.
-   - STRICT LATIN ALPHABET ONLY: NEVER output Arabic, Urdu (Nastaliq), or Devanagari script. All Hindi/Urdu words must be written in the Latin alphabet (e.g. 'Aap delivery ke 30 din ke andar product return kar sakte hain.').
-   - HINGLISH STYLE AND GRAMMAR GUIDE:
-     * CRITICAL LENGTH LIMIT: Never speak more than 2 short sentences. Do not list all steps. Just give the primary answer directly.
-     * Never use formal words like 'sampark' or 'ensure'. Use everyday casual words like 'contact', 'baat karein', or 'dhyaan rakhein'.
-     * Never say "5 se 7 working days mein mil jayega jab product unke inspection warehouse mein receive aur approve ho jayega." Just say: "Warehouse inspection ke baad 5 se 7 din mein refund mil jayega."
-     * Never use awkward phrases like 'apne peese' (use 'paise' or 'refund') or 'product ki koi use' (use 'product unused ho').
-   - You must translate the retrieved English context into natural Roman Hinglish before speaking. Never reply in English to a Hindi/Hinglish question.
-   - NEVER mix English and Hinglish modes in a single response.
+   - HINGLISH MODE: If the user speaks Hindi/Urdu/Hinglish, reply ONLY in natural, everyday Colloquial Roman Hinglish (Latin alphabet).
+   - ARABIC MODE: If the user speaks Arabic, reply ONLY in natural, polite Arabic script with warm Gulf/Qatari phrasing.
+   - You must translate the retrieved English context into the user's language before speaking. Never reply in English to a Hindi or Arabic question.
+   - NEVER mix English, Hinglish, and Arabic in a single response.
 
 2. TEXT-TO-SPEECH (TTS) PROSE & PHONETICS:
    - CRITICAL LENGTH LIMIT: Strictly maximum 1 or 2 short, crisp, conversational sentences (total under 30 words). Never output 3 or more sentences.
-   - Spell words with smooth phonetics for TTS clarity: use 'toota' or 'damaged' (never 'tutaa'), 'Apex' (never 'Aapex'), 'theek' (never 'thik'), 'yeh' (never 'yah'), 'paise' (never 'peese'), 'wapas' (never 'vapas'), 'agar' (never 'yadi').
-   - Avoid broken grammar like 'product ki koi use' (say 'product unused ho') or 'yah condition hai ki'.
+   - For Hinglish, spell words with smooth phonetics: 'toota' or 'damaged' (never 'tutaa'), 'Apex' (never 'Aapex'), 'theek' (never 'thik'), 'yeh' (never 'yah'), 'paise' (never 'peese'), 'wapas' (never 'vapas'), 'agar' (never 'yadi').
    - ABSOLUTE PROHIBITION: Never use bullet points, numbered lists, bolding, italics, or Markdown formatting of any kind.
    - Speak directly as a human speaks, using smooth conversational transitions.
 
@@ -207,7 +252,7 @@ CRITICAL OPERATING RULES:
    - Your factual knowledge is strictly limited to the provided RETRIEVED KNOWLEDGE BASE CONTEXT.
    - NEVER invent facts, extrapolate unstated details, or use parametric outside knowledge.
    - If the retrieved context does not contain the answer AND conversation history cannot solve it, cheerfully state that you do not have that specific information in your documents.
-   - Abstain politely using the user's detected language (English or Hinglish).
+   - Abstain politely using the user's detected language (English, Hinglish, or Arabic).
 
 4. CONVERSATIONAL MEMORY & FALLBACK REASONING:
    - When "NO NEW KNOWLEDGE BASE DOCUMENTS RETURNED" is indicated:
@@ -231,8 +276,9 @@ Retrieved Knowledge Base Context:
 
         response = await llm.ainvoke(prompt_messages)
         answer_text = response.content if hasattr(response, "content") else str(response)
-        # Fail-safe romanization check if any non-Latin characters slipped through
-        if answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
+        
+        # Fail-safe romanization check strictly for Hindi/Hinglish mode
+        if detected_lang == "hi" and answer_text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', answer_text):
             answer_text = await romanize_script(answer_text, api_key=api_key)
     except Exception as e:
         logger.warning(f"Answer generation primary LLM call failed ({e}), checking fallback provider...")
@@ -252,7 +298,9 @@ Retrieved Knowledge Base Context:
                 logger.warning(f"Fallback LLM call also failed ({e2})")
 
         if not answer_text:
-            if user_is_hinglish:
+            if detected_lang == "ar":
+                answer_text = "عذراً، لم أجد معلومات محددة بخصوص ذلك في قاعدة بياناتنا."
+            elif detected_lang == "hi":
                 answer_text = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
             else:
                 answer_text = FALLBACK_STRICT_RESPONSE
@@ -269,5 +317,6 @@ Retrieved Knowledge Base Context:
     return {
         "final_answer": answer_text,
         "messages": [AIMessage(content=answer_text)],
-        "citations": citations
+        "citations": citations,
+        "detected_language": detected_lang
     }

@@ -27,34 +27,26 @@ from livekit.agents import (
     Agent,
     AgentSession,
     TurnHandlingOptions,
-    EndpointingOptions,
     cli,
     stt,
     llm,
     StopResponse,
     UserInputTranscribedEvent,
 )
-from livekit.plugins import openai, silero
-import livekit.plugins.openai.tts as oai_tts
+from livekit.plugins import silero
 from langchain_core.messages import HumanMessage, AIMessage
 from app.graph.workflow import graph
-from app.graph.nodes import detect_is_hinglish, romanize_script
+from app.graph.nodes import detect_user_language, detect_is_hinglish, romanize_script
 from app.core.database import get_chat_history, save_chat_message
 from app.worker.audio_pipeline import strip_citations_for_tts
-
-# Guard against OpenAI-compatible endpoints (like CheaperInference) that reject stream_format="sse"
-class _AudioStreamModelsSet(set):
-    def __contains__(self, item):
-        return True
-
-oai_tts.AUDIO_STREAM_MODELS = _AudioStreamModelsSet()
+from app.worker.adapters import create_stt_adapter, create_tts_adapter
 
 logger = logging.getLogger("livekit_worker")
 logging.basicConfig(level=logging.INFO)
 
 class RomanizingSTTWrapper(stt.STT):
-    """Intercepts STT transcription frames to ensure all speech events emitted by LiveKit
-    are already transliterated to Roman Hinglish before touching WebRTC, transcripts, or events.
+    """Intercepts STT transcription frames to ensure Urdu/Hindi script is transliterated
+    to Roman Hinglish, while strictly preserving authentic Arabic script and English text.
     """
     def __init__(self, wrapped: stt.STT):
         super().__init__(capabilities=wrapped.capabilities)
@@ -72,7 +64,7 @@ class RomanizingSTTWrapper(stt.STT):
         )
         if event and event.alternatives:
             for alt in event.alternatives:
-                if alt.text and re.search(r'[\u0600-\u06FF\u0900-\u097F]', alt.text):
+                if alt.text and detect_user_language(alt.text) == "hi" and re.search(r'[\u0600-\u06FF\u0900-\u097F]', alt.text):
                     alt.text = await romanize_script(alt.text)
         return event
 
@@ -93,36 +85,24 @@ async def entrypoint(ctx: JobContext):
     participant = await ctx.wait_for_participant()
     logger.info(f"Participant joined room: {participant.identity}")
 
-    # 3. Configure plugins: local Silero VAD + CheaperInference STT & TTS
+    # 3. Configure plugins: Silero VAD + Replaceable STT & TTS Adapters
     vad = silero.VAD.load()
     
-    # Use StreamAdapter to wrap standard REST Whisper STT with local VAD buffering
-    base_stt = openai.STT(
-        model=settings.effective_stt_model,
-        base_url=settings.effective_stt_base_url,
-        api_key=settings.effective_stt_api_key,
-        prompt="Haanji, boliye. Main aapki kya madad kar sakta hoon? Main return policy, order status aur shipping ke baare mein bata sakta hoon.",
-        use_realtime=False,
-        # stop STT auto-translate:
-        language="",
-        detect_language=True
-    )
-    adapted_stt = stt.StreamAdapter(stt=RomanizingSTTWrapper(base_stt), vad=vad)
+    raw_stt = create_stt_adapter(vad=vad)
+    adapted_stt = RomanizingSTTWrapper(raw_stt)
+    tts = create_tts_adapter()
 
-    tts = openai.TTS(
-        model=settings.effective_tts_model,
-        base_url=settings.effective_tts_base_url,
-        api_key=settings.effective_tts_api_key,
-        voice=settings.effective_tts_voice
+    logger.info(
+        f"Active Providers: STT='{settings.effective_stt_provider}', TTS='{settings.effective_tts_provider}'"
     )
 
-    # 4. TurnHandlingOptions with 2.5-second silence threshold (min_delay = 2.5s)
+    # 4. TurnHandlingOptions with responsive VAD endpointing
     turn_handling: TurnHandlingOptions = {
         "turn_detection": "vad",
         "endpointing": {
             "mode": "fixed",
-            "min_delay": 2.5,
-            "max_delay": 4.0,
+            "min_delay": 2.0,
+            "max_delay": 3.5,
         },
         "interruption": {"enabled": True, "mode": "vad"}
     }
@@ -142,8 +122,11 @@ async def entrypoint(ctx: JobContext):
         if not user_transcript:
             return
 
-        # Romanize any Urdu/Arabic/Devanagari script immediately so terminal, DB & LLM only see clean Latin script
-        if re.search(r'[\u0600-\u06FF\u0900-\u097F]', user_transcript):
+        user_lang = detect_user_language(user_transcript)
+
+        # Transliterate Urdu/Nastaliq/Devanagari script only for Hindi/Hinglish
+        # NEVER transliterate authentic Arabic script
+        if user_lang == "hi" and re.search(r'[\u0600-\u06FF\u0900-\u097F]', user_transcript):
             user_transcript = await romanize_script(user_transcript)
 
         if user_transcript in recent_transcripts:
@@ -153,7 +136,7 @@ async def entrypoint(ctx: JobContext):
         if len(recent_transcripts) > 50:
             recent_transcripts.clear()
 
-        logger.info(f"User Speech Committed: '{user_transcript}'")
+        logger.info(f"User Speech Committed [{user_lang.upper()}]: '{user_transcript}'")
         
         session_id = ctx.room.name
         api_key = settings.effective_llm_api_key
@@ -198,16 +181,17 @@ async def entrypoint(ctx: JobContext):
         except Exception as e:
             logger.warning(f"Failed to save user speech to DB: {e}")
         
-        is_user_hinglish = detect_is_hinglish(user_transcript)
-        fallback_msg = (
-            "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
-            if is_user_hinglish
-            else settings.FALLBACK_STRICT_RESPONSE
-        )
+        if user_lang == "ar":
+            fallback_msg = "عذراً، لم أجد معلومات محددة بخصوص ذلك في قاعدة بياناتنا."
+        elif user_lang == "hi":
+            fallback_msg = "Maaf kijiye, mujhe is baare mein hamari knowledge base mein koi specific jankari nahi mili."
+        else:
+            fallback_msg = settings.FALLBACK_STRICT_RESPONSE
 
         try:
             result = await graph.ainvoke(initial_state, config=config)
             raw_answer = result.get("final_answer") or fallback_msg
+            detected_lang = result.get("detected_language") or user_lang
             citations = result.get("citations", [])
 
             # Persist agent response and citations to SQLite
@@ -217,15 +201,19 @@ async def entrypoint(ctx: JobContext):
             except Exception as e:
                 logger.warning(f"Failed to save agent response to DB: {e}")
 
-            # Clean response for TTS engine (strip bracketed citations)
-            spoken_text = strip_citations_for_tts(raw_answer)
-            # Ensure spoken text is pure Roman script so TTS voice produces natural Indian cadence
-            if re.search(r'[\u0600-\u06FF\u0900-\u097F]', spoken_text):
-                spoken_text = await romanize_script(spoken_text)
-            logger.info(f"TTS Spoken Output: {spoken_text}")
+            # Dynamic Voice Mapping: Select language-appropriate voice
+            chosen_voice = settings.get_tts_voice(detected_lang)
+            if hasattr(tts, "update_voice"):
+                tts.update_voice(chosen_voice)
 
+            # Clean response for TTS engine
+            spoken_text = strip_citations_for_tts(raw_answer, lang=detected_lang)
+            if detected_lang == "hi" and re.search(r'[\u0600-\u06FF\u0900-\u097F]', spoken_text):
+                spoken_text = await romanize_script(spoken_text)
+
+            logger.info(f"TTS Spoken Output [{detected_lang.upper()}]: {spoken_text}")
             logger.info(
-                f"TTS Voice Selected: Native Indian Voice ({settings.effective_tts_voice} via {settings.effective_tts_model})"
+                f"TTS Voice Active: {chosen_voice} (Provider: {settings.effective_tts_provider})"
             )
             await session.say(spoken_text)
         except Exception as e:
@@ -262,5 +250,4 @@ async def entrypoint(ctx: JobContext):
             asyncio.create_task(handle_user_query(ev.transcript))
 
 if __name__ == "__main__":
-
     cli.run_app(server)

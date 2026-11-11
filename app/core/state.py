@@ -10,3 +10,4 @@ class AgenticVoiceState(TypedDict, total=False):
     is_context_relevant: bool
     final_answer: str
     citations: List[Dict[str, Any]]
+    detected_language: str

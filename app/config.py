@@ -9,6 +9,21 @@ class Settings(BaseSettings):
     OPENROUTER_FAST_MODEL: str = "openai/gpt-4o-mini"
     OPENROUTER_EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
 
+    # Provider Selection: "gemini" | "openai" | "openrouter" | "cheaper_inference"
+    STT_PROVIDER: str = "gemini"
+    TTS_PROVIDER: str = "gemini"
+
+    # Google Gemini API configuration
+    GEMINI_API_KEY: str = ""
+    GEMINI_STT_MODEL: str = "gemini-3.5-transcribe-live"
+    GEMINI_TTS_MODEL: str = "gemini-3.8-flash-lite-tts"
+
+    # Gemini Configurable Voice Mapping System (Verified prebuilt voices)
+    GEMINI_TTS_VOICE_EN: str = "Kore"
+    GEMINI_TTS_VOICE_HI: str = "Puck"
+    GEMINI_TTS_VOICE_AR: str = "Leda"
+    GEMINI_TTS_DEFAULT_VOICE: str = "Kore"
+
     # CheaperInference & Audio Cascade configuration
     CHEAPER_INFERENCE_API_KEY: str = ""
     CHEAPER_INFERENCE_BASE_URL: str = "https://api.cheaperinference.com/v1"
@@ -99,6 +114,45 @@ class Settings(BaseSettings):
         if v_lower in ("priya", "tht5kcbeypx3keuqqhph"):
             return "ThT5KcBeYPX3keUQqHPh"
         return str(raw_voice).strip()
+
+    @property
+    def effective_stt_provider(self) -> str:
+        prov = (self.STT_PROVIDER or "gemini").lower().strip()
+        if prov == "gemini" and self.GEMINI_API_KEY:
+            return "gemini"
+        return "openai"
+
+    @property
+    def effective_tts_provider(self) -> str:
+        prov = (self.TTS_PROVIDER or "gemini").lower().strip()
+        if prov == "gemini" and self.GEMINI_API_KEY:
+            return "gemini"
+        return "openai"
+
+    def get_tts_voice(self, lang: str = "en") -> str:
+        """Returns the appropriate voice for the detected language and active TTS provider."""
+        lang_code = (lang or "en").lower().strip()
+        provider = self.effective_tts_provider
+
+        # Detect target language category
+        if any(h in lang_code for h in ("hi", "hin", "hinglish", "urdu")):
+            target_lang = "hi"
+        elif any(a in lang_code for a in ("ar", "ara", "arabic", "gulf", "qatari")):
+            target_lang = "ar"
+        else:
+            target_lang = "en"
+
+        if provider == "gemini":
+            if target_lang == "hi":
+                return self.GEMINI_TTS_VOICE_HI or "Puck"
+            elif target_lang == "ar":
+                return self.GEMINI_TTS_VOICE_AR or "Leda"
+            return self.GEMINI_TTS_VOICE_EN or self.GEMINI_TTS_DEFAULT_VOICE or "Kore"
+        else:
+            # Fallback for OpenAI / ElevenLabs provider
+            if target_lang == "hi":
+                return self.TTS_HINGLISH_VOICE or "zT03pEAEi0VHKciJODfn"
+            return self.effective_tts_voice
 
     @property
     def effective_llm_api_key(self) -> str:
